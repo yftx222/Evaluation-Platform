@@ -19,7 +19,7 @@ import pytest
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
-from playwright.sync_api import expect, sync_playwright
+from playwright.sync_api import Route, expect, sync_playwright
 from pydantic import SecretStr
 
 from app.api.main import create_app
@@ -311,8 +311,21 @@ def test_browser_project_release(environment: tuple[Settings, str, str, str]) ->
                 page.get_by_role("button", name="登录", exact=True).click()
                 page.get_by_label("项目标识").fill("browser")
                 page.get_by_label("项目名称").fill("浏览器验收")
-                page.get_by_role("button", name="创建项目", exact=True).click()
+                pending: list[Route] = []
+                pattern = "**/api/v1/adapters/implementations"
+                page.route(pattern, lambda route: pending.append(route))
+                with page.expect_request(pattern):
+                    page.get_by_role("button", name="创建项目", exact=True).click()
                 page.get_by_role("button", name="版本", exact=True).click()
+                submit = page.get_by_role("button", name="发布版本", exact=True)
+                expect(submit).to_be_disabled()
+                expect(page.get_by_text("正在加载接入协议…")).to_be_visible()
+                pending[0].fulfill(status=503, json={"error": {"message": "服务暂不可用"}})
+                expect(page.get_by_role("alert")).to_contain_text("接入协议加载失败")
+                expect(submit).to_be_disabled()
+                page.unroute(pattern)
+                page.get_by_role("button", name="重试加载协议").click()
+                expect(submit).to_be_enabled()
                 for label, value in [
                     ("版本标签", "v1"),
                     ("部署标识", "build1"),
@@ -320,8 +333,18 @@ def test_browser_project_release(environment: tuple[Settings, str, str, str]) ->
                     ("只读探测地址", url + "/ok"),
                 ]:
                     page.get_by_label(label).fill(value)
-                page.get_by_role("button", name="发布版本").click()
-                page.get_by_role("button", name="测试连接").click()
+                with page.expect_response(
+                    lambda r: r.request.method == "POST" and r.url.endswith("/versions")
+                ) as publication:
+                    submit.click()
+                assert publication.value.status == 201
+                version = publication.value.json()["data"]
+                row = page.locator(".row").filter(has_text="v1 · build1 · http / 2")
+                expect(row).to_be_visible()
+                with page.expect_request("**/test-connection") as probe:
+                    row.get_by_role("button", name="测试连接").click()
+                probe_body = probe.value.post_data_json
+                assert isinstance(probe_body, dict) and probe_body["version_id"] == version["id"]
                 expect(page.get_by_role("status").filter(has_text="连接成功")).to_be_visible()
                 page.get_by_label("接入协议与构建").select_option("openai_compatible:1")
                 page.get_by_label("版本标签").fill("v2")
@@ -330,6 +353,22 @@ def test_browser_project_release(environment: tuple[Settings, str, str, str]) ->
                 expect(
                     page.locator(".row").filter(has_text="openai_compatible / 1")
                 ).to_be_visible()
+                # A successful POST alone must not give a false confirmation.
+                page.route(
+                    "**/projects/*/versions*",
+                    lambda route: (
+                        route.fulfill(json={"data": {"items": [], "next_cursor": None}})
+                        if route.request.method == "GET"
+                        else route.continue_()
+                    ),
+                )
+                page.get_by_label("版本标签").fill("v3")
+                with page.expect_response(
+                    lambda r: r.request.method == "POST" and r.url.endswith("/versions")
+                ) as third:
+                    submit.click()
+                assert third.value.status == 201
+                expect(page.get_by_text("列表尚未显示新版本", exact=False)).to_be_visible()
                 browser.close()
         finally:
             server.should_exit = True

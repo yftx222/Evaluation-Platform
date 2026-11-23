@@ -1,11 +1,15 @@
 import asyncio
+import hashlib
+import inspect
 import ipaddress
 import json
 import re
 import socket
+import sys
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import ModuleType
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -250,28 +254,64 @@ class Implementation:
     requirements: tuple[str, ...]
     capabilities: tuple[str, ...]
     example: dict[str, Any]
+    dependencies: tuple[ModuleType, ...] = ()
+
+    def fingerprint(self) -> str:
+        # Include shared conversion helpers, wire contracts and the restricted transport.
+        modules = {
+            cls.__module__
+            for cls in (Mapping, self.factory, self.options, AdapterConfig, UnifiedRequest)
+        }
+        modules.update(module.__name__ for module in self.dependencies)
+        sources = [inspect.getsource(sys.modules[name]) for name in sorted(modules)]
+        sources.extend(inspect.getsource(cls) for cls in (DestinationPolicy, HTTPAdapter))
+        sources.append(inspect.getsource(AdapterRegistry.create))
+        sources.extend(
+            (
+                self.factory.__qualname__,
+                self.options.__qualname__,
+                repr(self.requirements),
+                repr(self.capabilities),
+            )
+        )
+        return hashlib.sha256("\0".join(sources).encode("utf-8")).hexdigest()
 
 
 class AdapterRegistry:
     def __init__(self) -> None:
-        self.plugins: dict[tuple[str, str], Implementation] = {}
+        self._plugins: dict[tuple[str, str], Implementation] = {}
+        self._digests: dict[tuple[str, str], str] = {}
 
-    def register(self, kind: str, build: str, plugin: Implementation) -> None:
-        if (kind, build) in self.plugins:
+    def register(
+        self, kind: str, build: str, plugin: Implementation, *, release_digest: str | None = None
+    ) -> None:
+        if (kind, build) in self._plugins:
             raise ValueError("重复的 Adapter 注册")
-        self.plugins[kind, build] = plugin
+        fingerprint = plugin.fingerprint()
+        if (release_digest or build) != fingerprint:
+            raise ValueError(f"Adapter {kind}/{build} 与发布摘要不符，请使用新 build")
+        self._plugins[kind, build] = plugin
+        self._digests[kind, build] = fingerprint
+
+    def digest(self, kind: str, build: str) -> str:
+        try:
+            return self._digests[kind, build]
+        except KeyError as exc:
+            raise AdapterError("VERSION_UNAVAILABLE", "not_sent") from exc
 
     def describe(self) -> list[dict[str, Any]]:
         return [
             {
                 "kind": k,
                 "build": b,
+                "implementation_digest": self.digest(k, b),
                 "config_schema": p.options.model_json_schema(),
                 "input_requirements": p.requirements,
                 "capabilities": p.capabilities,
                 "example": p.example,
             }
-            for (k, b), p in self.plugins.items()
+            for (k, b), p in self._plugins.items()
+            if (k, b) != ("http", "1")
         ]
 
     def create(
@@ -281,7 +321,7 @@ class AdapterRegistry:
         resolver: SecretResolver,
         project: str,
     ) -> BaseAdapter:
-        plugin = self.plugins.get((config.kind, config.build))
+        plugin = self._plugins.get((config.kind, config.build))
         if plugin is None:
             raise AdapterError("VERSION_UNAVAILABLE", "not_sent")
         try:
@@ -301,9 +341,15 @@ class AdapterRegistry:
 
 
 registry = AdapterRegistry()
-registry.register(
-    "http", "1", Implementation(Mapping, HTTPOptions, ("request_map",), ("execute",), {})
-)
+http_mapping = Implementation(Mapping, HTTPOptions, ("request_map",), ("execute",), {})
+# Frozen baseline for snapshots published before implementation digests were stored.
+LEGACY_RELEASES = {
+    ("http", "1"): "53b6530eb65298b2be7f200739bfdf37962a9e5014ae92613a2adc32091b7a10",
+    ("openai_compatible", "1"): "3cdfee7a08aa18b2a37ed02f55642928cdc10b2459db132aa3138dd508e83bf2",
+    ("agent", "1"): "e370c9dedce90fd0a0f48d701cb7b31ea46e4703fd471580f201ab68b7097405",
+}
+registry.register("http", "2", http_mapping, release_digest=LEGACY_RELEASES["http", "1"])
+registry.register("http", "1", http_mapping, release_digest=LEGACY_RELEASES["http", "1"])
 registry.register(
     "openai_compatible",
     "1",
@@ -314,6 +360,7 @@ registry.register(
         ("execute", "chat_completions"),
         {"model": "your-model-id"},
     ),
+    release_digest=LEGACY_RELEASES["openai_compatible", "1"],
 )
 registry.register(
     "agent",
@@ -321,4 +368,5 @@ registry.register(
     Implementation(
         AgentMapping, AgentOptions, ("query | messages",), ("execute", "embedded_events"), {}
     ),
+    release_digest=LEGACY_RELEASES["agent", "1"],
 )

@@ -8,7 +8,9 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts.adapters import AdapterError
 from app.contracts.http import AdapterConfig
+from app.plugins.http_adapter import LEGACY_RELEASES, registry
 
 
 class Fault(Exception):
@@ -105,9 +107,19 @@ async def version_adapter_config(db: AsyncSession, project: UUID, version: UUID)
         v=version,
         p=project,
     )
+    config = dict(stored["config"])
+    pinned = config.pop("_implementation_digest", None)
+    kind, build = stored["kind"], stored["build"]
+    deployed = registry.digest(kind, build)
+    if pinned is None:
+        # Both phases wrote http/1. Only Phase 2 understood base_url/options.
+        if (kind, build) != ("http", "1") or config.get("base_url") or config.get("options"):
+            pinned = LEGACY_RELEASES.get((kind, build))
+    if pinned != deployed:
+        raise AdapterError("VERSION_UNAVAILABLE", "not_sent")
     return AdapterConfig.model_validate(
         {
-            **stored["config"],
+            **config,
             **{k: stored[k] for k in ("kind", "build", "secret_ref", "secret_version")},
         }
     )

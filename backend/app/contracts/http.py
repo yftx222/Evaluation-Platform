@@ -24,7 +24,7 @@ class TargetRule(Contract):
 
 class AdapterConfig(Contract):
     kind: str = "http"
-    build: str = "1"
+    build: str = Field(default_factory=lambda data: "2" if data.get("kind") == "http" else "1")
     base_url: str | None = Field(None, exclude_if=lambda value: value is None)
     options: dict[str, Any] = Field(default_factory=dict, exclude_if=lambda value: not value)
     endpoint: str

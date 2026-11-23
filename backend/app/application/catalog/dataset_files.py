@@ -11,6 +11,7 @@ from zipfile import BadZipFile, ZipFile
 
 from defusedxml.common import DefusedXmlException  # type: ignore[import-untyped]
 from openpyxl import Workbook, load_workbook  # type: ignore[import-untyped]
+from openpyxl.cell import WriteOnlyCell  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from app.application.catalog.store import Fault
@@ -185,10 +186,25 @@ class ExportWriter:
 
     def table(self, cells: list[str]) -> None:
         if self.sheet is not None:
-            self.sheet.append(cells)
+            text_cells = []
+            for value in cells:
+                cell = WriteOnlyCell(self.sheet, value=value)
+                cell.data_type = "s"
+                text_cells.append(cell)
+            self.sheet.append(text_cells)
         else:
             line = io.StringIO(newline="")
-            csv.writer(line).writerow(cells)
+            # Case values are already JSON literals. Guard raw table cells too,
+            # including leading whitespace/control characters recognized by spreadsheets.
+            csv.writer(line).writerow(
+                "'" + value
+                if value.startswith(("\t", "\r", "\n"))
+                or value.lstrip(" \t\r\n\ufeff").startswith(
+                    ("=", "+", "-", "@", "＝", "＋", "－", "＠")
+                )
+                else value
+                for value in cells
+            )
             self.stream.write(line.getvalue().encode())
 
     def append(self, case: dict[str, Any]) -> None:

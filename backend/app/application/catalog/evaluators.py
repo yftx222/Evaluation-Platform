@@ -1,4 +1,6 @@
+import asyncio
 import json
+import logging
 import re
 import time
 from typing import Any
@@ -165,10 +167,14 @@ async def publish(
     return await row(db, VERSIONS + " WHERE v.id=:id", id=version_id)
 
 
+logger = logging.getLogger(__name__)
+TRIAL_TIMEOUT_SECONDS = 32
+
+
 async def trial(
     nodes: dict[UUID, dict[str, Any]], body: Trial, judge: JudgeClient
 ) -> EvaluationResult:
-    deadline = time.monotonic() + 32
+    deadline = time.monotonic() + TRIAL_TIMEOUT_SECONDS
     results: dict[UUID, EvaluationResult] = {}
     inputs = body.model_dump(exclude_unset=True)
     for id_, v in nodes.items():
@@ -188,6 +194,29 @@ async def trial(
         ):
             result = ctx.result("SKIPPED", "缺少必需评分输入：" + "、".join(plugin.requirements))
         else:
-            result = await plugin.factory().evaluate(body.case, body.prediction, ctx)
+            try:
+                async with asyncio.timeout(deadline - time.monotonic()):
+                    raw = await plugin.factory().evaluate(body.case, body.prediction, ctx)
+                if time.monotonic() >= deadline:
+                    raise TimeoutError
+                # Revalidate even a model constructed or mutated by a trusted plugin.
+                result = EvaluationResult.model_validate(
+                    raw.model_dump(warnings=False), strict=True
+                )
+                if (
+                    result.evaluator_version_id,
+                    result.evaluator_name,
+                    result.evaluator_version,
+                ) != (id_, v["name"], v["version"]):
+                    raise ValueError("unexpected evaluator identity")
+            except TimeoutError:
+                logger.warning("evaluator timed out version_id=%s", id_)
+                result = ctx.result("ERROR", "TRIAL_TIMEOUT")
+            except Exception as exc:
+                # CancelledError derives from BaseException. Never log plugin text or sample data.
+                logger.error(
+                    "evaluator failed version_id=%s exception_type=%s", id_, type(exc).__name__
+                )
+                result = ctx.result("ERROR", "EVALUATOR_FAILED")
         results[id_] = result
     return results[body.version_id]

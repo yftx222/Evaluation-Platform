@@ -97,8 +97,11 @@ input 和 expected 都是对象；附件使用 HTTPS 引用或 asset:标识，�
 ### 新增自定义 Adapter
 
 1. 在 backend/app/plugins 中实现受信 Mapping 子类。request_body 将 UnifiedRequest 转为业务请求体，normalize 将服务响应转为 UnifiedResponse。需要特殊内嵌事件时实现 trace。为专属 options 定义 extra=forbid 的 Contract 模型。
-2. 在部署代码中注册 registry.register(kind, build, Implementation(映射类, 选项模型, 输入要求, 能力, 配置示例))。组合后的实例满足 BaseAdapter。映射钩子只接收业务数据，所有网络调用由公共 HTTPAdapter 负责。部署评审需确认插件是纯映射代码。每次有不兼容的协议变化应使用新 build，并为可重放的历史版本保留旧实现。
+2. 创建 Implementation，传入映射类、选项模型、输入要求、能力和配置示例。额外影响行为的 Python 模块放入 dependencies。映射钩子只处理业务数据，公共 HTTPAdapter 负责网络调用，组合后的实例满足 BaseAdapter。
+   首次发布时用 implementation.fingerprint() 生成摘要，在源码中固定该值。注册方式是 `registry.register(kind, build, implementation, release_digest="已核对的摘要")`，也可直接用固定摘要作为 build。注册时会核对源代码。请求、响应、错误分类、重试标志或依赖行为发生变化，都要另发 build，并运行合同测试。已发布的编号和摘要永久配对。升级共享传输或运行依赖时，对受影响的插件分别发版，保留旧部署和依赖锁用于历史复现。
 3. 通过 GET /api/v1/adapters/implementations 核对实现声明。在 tests/test_adapter_protocols.py 的参数化合同测试中加入该实现和本地 HTTP 响应，运行 backend/test-compose.ps1。echo 是仅随测试加载的完整自定义示例。
+
+普通 HTTP 新发布使用 build 2。项目版本保存实现摘要，每次使用版本时都与部署核对。以前的普通 HTTP build 1 曾对应两套错误处理规则。历史快照含 Phase 2 专有的 base_url 或 options 时，可按已固定的 Phase 2 实现读取。两项都缺少时，平台在发送请求前返回 VERSION_UNAVAILABLE。历史记录仍可查看；继续评测可用相同配置另发一个 build 2 项目版本。需要重放原行为时，应先核实原部署并使用其归档镜像。历史 Chat 和 Agent build 1 按已知的发布摘要读取。
 
 业务调用每次向受限目的地发送一个请求，透传 Idempotency-Key。429 映射为 TARGET_RATE_LIMIT、5xx 为可重试 TARGET_HTTP_ERROR，均不在 Adapter 内重试。真实项目是否按该键去重，仍应由项目方联调验证。普通模型响应可以不含 Trace；Agent 的正式 TraceWrite 回调归入 Phase 4。
 

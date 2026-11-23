@@ -98,16 +98,19 @@ function Editor({
   submit,
   children,
   save = "保存",
+  disabled = false,
 }: {
   title: string;
   submit: (data: FormData) => Promise<void>;
   children: ReactNode;
   save?: string;
+  disabled?: boolean;
 }) {
   const [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
   async function send(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    if (disabled || busy) return;
     const data = new FormData(e.currentTarget);
     setBusy(true);
     setMessage("");
@@ -124,7 +127,7 @@ function Editor({
     <form onSubmit={send}>
       <h3>{title}</h3>
       <div className="fields">{children}</div>
-      <Button htmlType="submit" loading={busy}>
+      <Button htmlType="submit" loading={busy} disabled={disabled}>
         {save}
       </Button>
       <output>{message}</output>
@@ -211,7 +214,9 @@ function Details({
     [members, setMembers] = useState<Row[]>([]),
     [keys, setKeys] = useState<Row[]>([]),
     [plugins, setPlugins] = useState<AdapterPlugin[]>([]),
-    [pluginKey, setPluginKey] = useState("http:1"),
+    [pluginKey, setPluginKey] = useState(""),
+    [registryError, setRegistryError] = useState(""),
+    [registryAttempt, setRegistryAttempt] = useState(0),
     [admin, setAdmin] = useState(false),
     [secret, setSecret] = useState(""),
     [message, setMessage] = useState(""),
@@ -227,19 +232,36 @@ function Details({
     setVersions(v);
     setAdmin(perm.role === "A");
     if (perm.role === "A") {
-      const [m, k, implementations] = await Promise.all([
+      const [m, k] = await Promise.all([
         all(call, path + "/members"),
         all(call, path + "/api-keys"),
-        call<AdapterPlugin[]>("/adapters/implementations"),
       ]);
       setMembers(m);
       setKeys(k);
-      setPlugins(implementations);
     }
   }
   useEffect(() => {
     load().catch((e) => setMessage(String(e)));
   }, [id]);
+  useEffect(() => {
+    if (!admin) return;
+    let current = true;
+    setRegistryError("");
+    setPlugins([]);
+    call<AdapterPlugin[]>("/adapters/implementations")
+      .then((items) => {
+        if (!current) return;
+        if (!items.length) throw new Error("没有已部署的接入协议");
+        setPlugins(items);
+        setPluginKey(items[0].kind + ":" + items[0].build);
+      })
+      .catch((error) => {
+        if (current) setRegistryError("接入协议加载失败：" + String(error));
+      });
+    return () => {
+      current = false;
+    };
+  }, [admin, id, registryAttempt]);
   async function act(fn: () => Promise<unknown>) {
     try {
       await fn();
@@ -309,6 +331,7 @@ function Details({
             <Editor
               title="发布接入版本"
               save="发布版本"
+              disabled={!plugin}
               submit={async (d) => {
                 const ref = val(d, "secret_ref"),
                   ver = val(d, "secret_version");
@@ -318,7 +341,7 @@ function Details({
                 const options = jsonObject(d, "options", "协议选项");
                 if (plugin.kind === "openai_compatible")
                   options.model = val(d, "model");
-                await call(path + "/versions", "POST", {
+                const created = await call<Row>(path + "/versions", "POST", {
                   label: val(d, "label"),
                   deployment_ref: val(d, "deployment_ref"),
                   adapter: {
@@ -340,12 +363,33 @@ function Details({
                     secret_version: ver || null,
                   },
                 });
-                await load();
+                const latest = await all(call, path + "/versions");
+                setVersions(latest);
+                if (!latest.some((v) => v.id === created.id)) {
+                  throw new Error(
+                    "服务器已接受发布，但列表尚未显示新版本，请刷新后核对",
+                  );
+                }
               }}
             >
+              {!plugin &&
+                (registryError ? (
+                  <div role="alert">
+                    {registryError}
+                    <button
+                      type="button"
+                      onClick={() => setRegistryAttempt((n) => n + 1)}
+                    >
+                      重试加载协议
+                    </button>
+                  </div>
+                ) : (
+                  <p role="status">正在加载接入协议…</p>
+                ))}
               <label>
                 接入协议与构建
                 <select
+                  disabled={!plugins.length}
                   value={pluginKey}
                   onChange={(e) => setPluginKey(e.target.value)}
                 >

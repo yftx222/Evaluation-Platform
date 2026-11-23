@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import io
 import json
 import socket
@@ -11,15 +12,16 @@ import pytest
 import uvicorn
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
-from openpyxl import Workbook  # type: ignore[import-untyped]
+from openpyxl import Workbook, load_workbook  # type: ignore[import-untyped]
 from playwright.sync_api import expect, sync_playwright
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.api.main import create_app
-from app.application.catalog.dataset_files import MAX_BYTES, parse
+from app.application.catalog.dataset_files import MAX_BYTES, ExportWriter, parse
 from app.application.catalog.store import Fault
+from app.contracts.datasets import Case, Format
 from app.infrastructure.resources import Settings
 
 ROOT = "/api/v1/datasets"
@@ -197,6 +199,66 @@ def test_catalog_snapshots_and_files(catalog: tuple[Settings, dict[str, str]]) -
                 await engine.dispose()
 
         asyncio.run(direct_write())
+
+
+@pytest.mark.parametrize("fmt", ["json", "jsonl", "csv", "xlsx"])
+def test_formula_like_values_roundtrip(fmt: Format) -> None:
+    values = [
+        "=1+1",
+        "+SUM(1,2)",
+        "-1+2",
+        "@SUM(1)",
+        " \t=1+1",
+        "\r=1+1",
+        "\n=1+1",
+        'text,"quoted"\n=1+1',
+        "'=1+1",
+        "＝1+1",
+    ]
+    cases = [
+        Case.model_validate({**example(str(i)), "category": value, "input": {"query": value}})
+        for i, value in enumerate(values)
+    ]
+    stream = io.BytesIO()
+    writer = ExportWriter(stream, fmt)
+    for case in cases:
+        writer.append(case.model_dump())
+    writer.finish()
+    assert parse(stream.getvalue(), fmt, {}) == cases
+    if fmt == "xlsx":
+        book = load_workbook(stream, read_only=True, data_only=False)
+        try:
+            assert all(cell.data_type == "s" for row in book.active.rows for cell in row)
+        finally:
+            book.close()
+    if fmt == "csv":
+        for row in csv.reader(io.StringIO(stream.getvalue().decode(), newline="")):
+            assert all(not cell.lstrip().startswith(("=", "+", "-", "@", "＝")) for cell in row)
+
+
+def test_raw_spreadsheet_cells_are_text() -> None:
+    values = ["=1+1", " \t+2", "-1", "@SUM(1)", "\tplain", "\r=1", "＝1+1"]
+    stream = io.BytesIO()
+    csv_writer = ExportWriter(stream, "csv")
+    csv_writer.table(values)
+    csv_writer.finish()
+    assert list(csv.reader(io.StringIO(stream.getvalue().decode(), newline="")))[1] == [
+        "'" + value for value in values
+    ]
+    stream = io.BytesIO()
+    xlsx_writer = ExportWriter(stream, "xlsx")
+    xlsx_writer.table(values)
+    xlsx_writer.finish()
+    book = load_workbook(stream, read_only=True, data_only=False)
+    try:
+        row = list(book.active.rows)[1]
+        assert all(cell.data_type == "s" for cell in row)
+        # XML readers may normalize raw CR to LF. Case fields above use JSON escaping.
+        assert [cell.value.replace("\r", "\n") for cell in row] == [
+            value.replace("\r", "\n") for value in values
+        ]
+    finally:
+        book.close()
 
 
 def test_file_mapping_and_formula() -> None:

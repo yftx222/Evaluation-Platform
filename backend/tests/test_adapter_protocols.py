@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,6 +18,7 @@ from pydantic import SecretStr
 
 from app.api.main import create_app
 from app.application.access.identity import DevelopmentSecretResolver
+from app.application.catalog import store
 from app.application.catalog.store import version_adapter_config
 from app.contracts.adapters import AdapterError, Contract, UnifiedRequest, UnifiedResponse
 from app.contracts.datasets import Case
@@ -195,9 +197,15 @@ def test_wire_contract(
     if kind == "echo":
         plugins = AdapterRegistry()
         impl = Implementation(EchoMapping, Contract, ("query",), ("execute",), {})
-        plugins.register("echo", "1", impl)
+        pin = impl.fingerprint()
+        plugins.register("echo", "1", impl, release_digest=pin)
         with pytest.raises(ValueError):
-            plugins.register("echo", "1", impl)
+            plugins.register("echo", "1", impl, release_digest=pin)
+        replacement = Implementation(Mapping, Contract, ("query",), ("execute",), {})
+        with pytest.raises(ValueError, match="发布摘要"):
+            AdapterRegistry().register("echo", "1", replacement, release_digest=pin)
+        plugins.register("echo", replacement.fingerprint(), replacement)
+        assert plugins.digest("echo", "1") != plugins.digest("echo", replacement.fingerprint())
     cfg = config(url, kind)
     policy = DestinationPolicy([rule], True)
     adapter = plugins.create(cfg, policy, secrets(), "shop")
@@ -308,6 +316,47 @@ def test_chat_messages_and_agent_trace(wire: tuple[str, TargetRule, list[dict[st
     )
 
 
+@pytest.mark.parametrize(
+    ("kind", "build", "pin", "relative", "available"),
+    [
+        ("http", "2", "matching", False, True),
+        ("http", "2", "wrong", False, False),
+        ("http", "missing", None, False, False),
+        ("http", "2", None, False, False),
+        ("http", "1", None, False, False),
+        ("http", "1", None, True, True),
+        ("agent", "1", None, False, True),
+        ("openai_compatible", "1", None, False, True),
+    ],
+)
+def test_adapter_snapshot_resolution(
+    kind: str,
+    build: str,
+    pin: str | None,
+    relative: bool,
+    available: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config: dict[str, Any] = {"endpoint": "/query", "probe_endpoint": "/health"}
+    if relative:
+        config["base_url"] = "https://example.test"
+    if pin is not None:
+        config["_implementation_digest"] = (
+            registry.digest(kind, build) if pin == "matching" else pin
+        )
+    record = dict(kind=kind, build=build, config=config, secret_ref=None, secret_version=None)
+    monkeypatch.setattr(store, "row", AsyncMock(return_value=record))
+    query = version_adapter_config(AsyncMock(), uuid4(), uuid4())
+    if available:
+        cfg = asyncio.run(query)
+        assert (cfg.kind, cfg.build) == (kind, build)
+        assert ("_implementation_digest" in config) == (pin is not None)
+    else:
+        with pytest.raises(AdapterError) as err:
+            asyncio.run(query)
+        assert err.value.code == "VERSION_UNAVAILABLE" and err.value.delivery_state == "not_sent"
+
+
 def test_published_protocols_share_dataset(
     catalog: tuple[Settings, dict[str, str]], wire: tuple[str, TargetRule, list[dict[str, Any]]]
 ) -> None:
@@ -371,11 +420,25 @@ def test_published_protocols_share_dataset(
             )
             pp = "projects/" + p["id"]
             cfg = config(url, kind)
+            if kind == "http":
+                retired = client.post(
+                    "/api/v1/" + pp + "/versions",
+                    json={
+                        "label": "old",
+                        "deployment_ref": "deploy-a",
+                        "adapter": {**cfg.model_dump(), "build": "1"},
+                    },
+                )
+                assert (
+                    retired.status_code == 422
+                    and retired.json()["error"]["code"] == "BUILD_RETIRED"
+                )
             v = post(
                 pp + "/versions",
                 dict(label="v1", deployment_ref="deploy-a", adapter=cfg.model_dump()),
             )
-            assert v["kind"] == kind and v["build"] == "1" and len(v["adapter_digest"]) == 64
+            assert v["kind"] == kind and v["build"] == ("2" if kind == "http" else "1")
+            assert len(v["adapter_digest"]) == 64
             assert post(pp + "/test-connection", {"version_id": v["id"]})["ok"]
             item = client.get(
                 "/api/v1/" + path + "/cases", params={"version_id": version["id"]}

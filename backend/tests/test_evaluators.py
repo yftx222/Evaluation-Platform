@@ -4,6 +4,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+from unittest.mock import Mock
 from uuid import uuid4
 
 import pytest
@@ -14,13 +15,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.api.main import create_app
+from app.application.catalog import evaluators as catalog_service
 from app.application.catalog.store import Fault
 from app.contracts.adapters import UnifiedResponse
 from app.contracts.datasets import Case
-from app.contracts.evaluators import EvaluationResult, JudgeAccount, ScoringContext
+from app.contracts.evaluators import (
+    EvaluationResult,
+    JudgeAccount,
+    JudgeClient,
+    ScoringContext,
+    Trial,
+)
 from app.infrastructure.resources import Resources, Settings
 from app.plugins.evaluator_configs import Rule
-from app.plugins.evaluators import BUILD, MISSING, Code, Registry, matches, registry
+from app.plugins.evaluators import BUILD, MISSING, Code, Registry, Rules, matches, registry
 
 ROOT = "/api/v1/evaluators"
 CASE = {
@@ -103,6 +111,67 @@ def test_code_deadline() -> None:
     assert result.status == "ERROR" and result.reason == "CODE_TIMEOUT" and result.score is None
 
 
+@pytest.mark.parametrize(
+    "failure", ["exception", "id", "name", "version", "error_score", "timeout", "cancel"]
+)
+def test_trial_plugin_boundary(
+    failure: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    version_id = uuid4()
+    version = dict(
+        id=version_id,
+        name="catalog-name",
+        version="v1",
+        impl_key="rules",
+        build=BUILD,
+        members=[],
+        config={},
+    )
+    body = Trial.model_validate({"version_id": version_id, "case": CASE, "prediction": PRED})
+    entered = asyncio.Event()
+
+    async def evaluate(
+        self: Rules, case: Case, prediction: UnifiedResponse, context: ScoringContext
+    ) -> EvaluationResult:
+        if failure == "exception":
+            raise RuntimeError("private-sample-secret")
+        if failure in {"timeout", "cancel"}:
+            entered.set()
+            await asyncio.Event().wait()
+        original = context.result("OK", "valid", score=1, passed=True)
+        updates: dict[str, dict[str, Any]] = {
+            "id": {"evaluator_version_id": uuid4()},
+            "name": {"evaluator_name": "wrong"},
+            "version": {"evaluator_version": "other"},
+            "error_score": {"status": "ERROR", "score": 0},
+        }
+        return original.model_copy(update=updates[failure])
+
+    monkeypatch.setattr(Rules, "evaluate", evaluate)
+    if failure == "timeout":
+        monkeypatch.setattr(catalog_service, "TRIAL_TIMEOUT_SECONDS", 0.05)
+
+    async def exercise() -> None:
+        task = asyncio.create_task(
+            catalog_service.trial({version_id: version}, body, Mock(spec=JudgeClient))
+        )
+        if failure == "cancel":
+            await asyncio.wait_for(entered.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            return
+        result = await asyncio.wait_for(task, 2)
+        assert result.evaluator_version_id == version_id and result.evaluator_name == "catalog-name"
+        assert result.evaluator_version == "v1" and result.status == "ERROR"
+        assert result.score is None and result.passed is None
+        assert result.reason == ("TRIAL_TIMEOUT" if failure == "timeout" else "EVALUATOR_FAILED")
+        assert str(version_id) in caplog.text
+        assert "private-sample-secret" not in caplog.text + result.model_dump_json()
+
+    asyncio.run(exercise())
+
+
 def test_scoring_integration(
     catalog: tuple[Settings, dict[str, str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -128,7 +197,8 @@ def test_scoring_integration(
                 "choices": [
                     {"message": {"content": json.dumps(verdict) if model != "invalid" else "bad"}}
                 ],
-                "model": model,
+                "model": "resolved-model" if model == "alias" else model,
+                "model_revision": "provider-r1" if model == "alias" else None,
             }
             self.wfile.write(json.dumps(data).encode())
 
@@ -145,7 +215,7 @@ def test_scoring_integration(
                 prefix="/chat",
                 networks=["127.0.0.1/32"],
             ),
-            models=["test", "invalid", "slow", "unavailable"],
+            models=["test", "invalid", "slow", "unavailable", "alias"],
             rpm=30,
             max_parallel=1,
         )
@@ -266,6 +336,11 @@ def test_scoring_integration(
                     },
                 )
                 assert result["score"] == 1, result
+                if impl == "exact_match":
+                    other_case = {**CASE, "expected": {"answer": "5"}}
+                    assert grade(rule, r2, case=other_case)["score"] == grade(rule, r2)["score"]
+                    assert grade(code, version)["score"] == 1
+                    assert grade(code, version, case=other_case)["score"] == 0
             business = directory("business")
             bv = publish(business, "approved_policy", {})
             assert (
@@ -280,7 +355,7 @@ def test_scoring_integration(
                 dimensions=["accuracy"],
             )
 
-            def model(name: str, version: str) -> dict[str, Any]:
+            def model(name: str, version: str, revision: str | None = None) -> dict[str, Any]:
                 return publish(
                     judge,
                     "chat_judge",
@@ -289,12 +364,24 @@ def test_scoring_integration(
                     prompt_text="Evaluate correctness " + version,
                     prompt_version=version,
                     model_id=name,
+                    model_revision=revision,
                     provider="openai_compatible",
                     rubric_version="r1",
                 )
 
             j1 = model("test", "a")
             j2 = model("test", "b")
+            alias = grade(judge, model("alias", "alias-v1"))
+            assert alias["status"] == "OK"
+            assert alias["details"]["parameters"]["model"] == "alias"
+            assert alias["details"]["model"] == "resolved-model"
+            assert alias["details"]["revision_unverified"] is True
+            pinned_alias = grade(judge, model("alias", "alias-pinned", "provider-r1"))
+            assert pinned_alias["status"] == "OK"
+            assert (
+                pinned_alias["details"]["parameters"]["model"] != pinned_alias["details"]["model"]
+            )
+            assert pinned_alias["details"]["revision_unverified"] is False
             candidate = {
                 key: j1[key]
                 for key in (

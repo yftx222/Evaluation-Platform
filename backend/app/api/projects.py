@@ -193,13 +193,17 @@ async def publish(request: Request, p: UUID, db: Db, who: User, body: Publish) -
     await db.commit()
     policy = policy_for(request, project["slug"])
     cfg = body.adapter
+    if (cfg.kind, cfg.build) == ("http", "1"):
+        raise Fault(422, "BUILD_RETIRED", "新 HTTP 版本请使用 build 2")
     registry.create(cfg, policy, request.app.state.secrets, project["slug"])
+    fingerprint = registry.digest(cfg.kind, cfg.build)
     async with asyncio.timeout(cfg.timeout_s):
         await policy.approve(cfg.address(cfg.endpoint))
         await policy.approve(cfg.address(cfg.probe_endpoint))
     async with db.begin():
         await authorize(db, who, p, "A", lock=True)
         data = cfg.model_dump(exclude={"kind", "build", "secret_ref", "secret_version"})
+        data["_implementation_digest"] = fingerprint
         a = await row(
             db,
             """INSERT INTO project_adapters(project_id,revision,kind,build,config,
@@ -212,7 +216,7 @@ async def publish(request: Request, p: UUID, db: Db, who: User, body: Publish) -
             cfg=json.dumps(data),
             ref=cfg.secret_ref,
             ver=cfg.secret_version,
-            digest=digest(cfg.model_dump()),
+            digest=digest([cfg.model_dump(), fingerprint]),
         )
         v = await row(
             db,
@@ -222,7 +226,7 @@ async def publish(request: Request, p: UUID, db: Db, who: User, body: Publish) -
             a=a["id"],
             label=body.label,
             ref=body.deployment_ref,
-            digest=digest(body.model_dump()),
+            digest=digest([body.model_dump(), fingerprint]),
         )
         await record(
             request,
