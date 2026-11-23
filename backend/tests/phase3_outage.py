@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -17,7 +18,12 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from test_batch_console import child_env, process
+from test_batch_console import (
+    test_batch_browser_and_api_restart as test_batch_browser_and_api_restart,
+)
 from test_evaluation_runs import ROOT, create, prepare
+from test_worker_scheduler import test_worker_crash_and_fencing as test_worker_crash_and_fencing
+from test_worker_scheduler import workload as workload
 
 from app.api.main import create_app
 from app.application.runner import runs
@@ -136,7 +142,8 @@ def test_dependency_outages(catalog: tuple[Settings, dict[str, str]]) -> None:
             child.start()
             try:
                 child.join(15)
-                assert child.exitcode == 77
+                child_exit = child.exitcode
+                assert child_exit == 77
             finally:
                 if child.is_alive():
                     child.terminate()
@@ -178,6 +185,20 @@ def test_dependency_outages(catalog: tuple[Settings, dict[str, str]]) -> None:
                     assert len(set(called)) == len(called) == 3 and worker.poll() is None
                     again = api.post(path, headers={"Idempotency-Key": "offline"})
                     assert again.json()["data"]["id"] == start.json()["data"]["id"]
+                    evidence = dict(
+                        run_id=info["id"],
+                        status=info["status"],
+                        succeeded=info["succeeded_cases"],
+                        unknown_delivery=info["unknown_delivery_cases"],
+                        ok_scores=info["score_counts"]["OK"],
+                        external_calls=len(called),
+                        unique_calls=len(set(called)),
+                        worker_exit_code=worker.poll(),
+                        redis_offline_start_status=start.status_code,
+                        disconnected_db_http_status=denied.status_code,
+                        uncommitted_process_exit=child_exit,
+                        replay_run_id=again.json()["data"]["id"],
+                    )
                 finally:
                     subprocess.run(["docker", "start", redis], check=True)
     finally:
@@ -185,3 +206,7 @@ def test_dependency_outages(catalog: tuple[Settings, dict[str, str]]) -> None:
         target.shutdown()
         target.server_close()
         thread.join()
+    print("OUTAGE", json.dumps(evidence), flush=True)
+    output = os.getenv("EVAL_OUTAGE_REPORT")
+    if output:
+        Path(output).write_text(json.dumps(evidence, indent=2) + "\n", encoding="utf8")

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from anyio import CancelScope
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import StreamingResponse
 from redis.exceptions import RedisError
@@ -41,7 +42,8 @@ async def progress(
         completed = 0
         heartbeat = time.monotonic()
         subscribed = False
-        async with resources.redis.pubsub(ignore_subscribe_messages=True) as sub:
+        sub = resources.redis.pubsub(ignore_subscribe_messages=True)
+        try:
             try:
                 async with asyncio.timeout(0.3):
                     await sub.subscribe(f"evaluations:progress:{r}")
@@ -97,6 +99,11 @@ async def progress(
                     except (RedisError, OSError, TimeoutError):
                         subscribed = False
                 await asyncio.sleep(1.5)
+        finally:
+            # StreamingResponse cancels its task group on disconnect. Redis still
+            # needs to close the socket and return its connection to the pool.
+            with CancelScope(shield=True):
+                await sub.aclose()
 
     return StreamingResponse(
         stream(),

@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
@@ -12,6 +13,7 @@ from app.worker.settings import WorkerSettings
 DUE = """(c.status='READY' OR (c.status='RETRY_WAIT' AND c.next_retry_at<=clock_timestamp()))"""
 LIVE = """c.status='RUNNING' AND c.lease_expires_at>clock_timestamp()"""
 CHANNEL = "evaluations:wake"
+MIN_SCHEMA = "0007_task_archive"
 
 
 @dataclass(frozen=True)
@@ -26,8 +28,22 @@ class Lease:
 
 async def initialize(resources: Resources, cfg: WorkerSettings) -> None:
     async with resources.transaction() as db:
-        if await db.scalar(text("SELECT version_num FROM alembic_version")) != "0007_task_archive":
-            raise RuntimeError("Worker 需要 0007_task_archive，请核对数据库迁移版本")
+        revisions = (
+            list(await db.scalars(text("SELECT version_num FROM alembic_version")))
+            if await db.scalar(text("SELECT to_regclass('alembic_version')"))
+            else []
+        )
+        revision = revisions[0] if len(revisions) == 1 else ""
+        # Four-digit revisions share the current schema contract. Breaking migrations
+        # must start a new generation (e.g. v2_0001_...) before changing Worker semantics.
+        match = re.fullmatch(r"(\d{4})_[a-z][a-z0-9_]*", revision, flags=re.ASCII)
+        if (
+            not match
+            or int(match[1]) < int(MIN_SCHEMA[:4])
+            or (match[1] == MIN_SCHEMA[:4] and revision != MIN_SCHEMA)
+        ):
+            current = ", ".join(revisions) or "未迁移"
+            raise RuntimeError(f"Worker 需要 {MIN_SCHEMA} 或同系列后续单一版本，当前为 {current}")
         await db.execute(
             text("""INSERT INTO worker_capacity(slots) VALUES (:slots)
                                  ON CONFLICT(singleton) DO NOTHING"""),

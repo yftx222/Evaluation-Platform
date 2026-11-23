@@ -14,7 +14,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.api.main import create_app
-from app.infrastructure.resources import Settings
+from app.infrastructure.resources import Resources, Settings
+from app.worker.scheduler import initialize
+from app.worker.settings import WorkerSettings
 
 
 def test_migration_cycle_and_constraints(clean_db: str) -> None:
@@ -80,3 +82,33 @@ def test_readiness_and_logs(services: Settings, caplog: pytest.LogCaptureFixture
             if failed:
                 assert result.json()["error"]["message"] == failed
     assert "private-sentinel" not in caplog.text
+
+
+@pytest.mark.parametrize("catalog", ["0006_worker_scheduler", "0007_task_archive"], indirect=True)
+def test_worker_schema_compatibility(catalog: tuple[Settings, dict[str, str]]) -> None:
+    settings, _ = catalog
+
+    async def check() -> None:
+        resources = Resources(settings)
+        try:
+            async with resources.transaction() as db:
+                current = await db.scalar(text("SELECT version_num FROM alembic_version"))
+            if current == "0006_worker_scheduler":
+                with pytest.raises(RuntimeError, match="0007_task_archive.*0006_worker_scheduler"):
+                    await initialize(resources, WorkerSettings())
+                return
+            await initialize(resources, WorkerSettings())
+            async with resources.transaction() as db:
+                await db.execute(text("ALTER TABLE worker_capacity ADD COLUMN note text"))
+                await db.execute(text("UPDATE alembic_version SET version_num='0008_add_note'"))
+            await initialize(resources, WorkerSettings())
+            async with resources.transaction() as db:
+                await db.execute(
+                    text("UPDATE alembic_version SET version_num='v2_0001_new_contract'")
+                )
+            with pytest.raises(RuntimeError, match="v2_0001"):
+                await initialize(resources, WorkerSettings())
+        finally:
+            await resources.close()
+
+    asyncio.run(check())

@@ -136,3 +136,28 @@ EVAL_TRACE_TARGET_VERSIONS 和 EVAL_VERIFIED_IDEMPOTENT_VERSIONS 是独立的项
 3. 展开样本查看脱敏输入、实际预测、尝试和评分。按状态筛选或翻页。归档任务后仍可查阅历史。
 
 集成测试使用 `backend/test-compose.ps1`。在隔离的 Compose 测试环境中，设置 `PYTEST_ADDOPTS=tests/phase3_load.py` 可运行分级压测，设置 `EVAL_BENCH_REPORT` 可指定输出 JSON 的位置。停服演练仅限项目 eval-phase34-check，设置 `PYTEST_ADDOPTS=tests/phase3_outage.py`，与常规回归分开执行。
+
+### Phase 3 Worker 与 Run 容量
+
+每个 Run 最多 10,000 条样本。预览、创建 Task 和新建 Run 均检查已发布版本；超限返回 HTTP 422 / RUN_CASE_LIMIT。使用原幂等键仍能找回已创建的 Run。每次启动在一个事务内创建 Run 和全部 Case，提交后才唤醒 Worker。
+
+Worker 最低支持 0007_task_archive。数据库迁移采用四位流水号、下划线及小写名称的单主线。0008 起沿用该编号系列的迁移必须向后兼容 Phase 3 Worker；破坏兼容性的迁移须切换代号（例如 v2_0001_...），旧 Worker 会拒绝启动。未迁移、旧版本或多 head 同样拒绝启动。
+
+数据库保存每条 Case 的 next_retry_at。项目及 Judge 配额不足时释放 Case 槽位，按本地配额等待次数独立退避（最短 250 毫秒）；已知 RPM 可用时间时按窗口等待。外呼 429 遵守供应商 Retry-After 和任务重试预算。首次及最大外呼退避继续使用 Task 冻结的策略。
+
+专项测试从 code 目录单独运行。先设置 COMPOSE_PROJECT_NAME=eval-phase34-check 并用 compose.yaml、compose.test.yaml 启动 postgres 和 redis。依次运行下列命令；故障测试会短暂停止此专用 Redis。需要先构建前端并安装 Chrome，临时数据库由测试自动创建和清理。
+
+```powershell
+$env:PYTEST_ADDOPTS = 'tests/phase3_load.py'
+$env:EVAL_BENCH_REPORT = (Join-Path $PWD '..\文档\阶段验收\Phase-3.1-修复-负载.json')
+./backend/test-compose.ps1
+$env:PYTEST_ADDOPTS = 'tests/phase3_capacity.py'
+$env:EVAL_CAPACITY_REPORT = (Join-Path $PWD '..\文档\阶段验收\Phase-3.1-修复-容量.json')
+./backend/test-compose.ps1
+$env:PYTEST_ADDOPTS = 'tests/phase3_outage.py'
+$env:EVAL_OUTAGE_REPORT = (Join-Path $PWD '..\文档\阶段验收\Phase-3.1-修复-故障.json')
+./backend/test-compose.ps1
+Remove-Item Env:PYTEST_ADDOPTS
+```
+
+负载报告记录真实多 Worker 和配额指标，容量报告记录单次与同任务双请求的初始化开销，故障 JSON 记录依赖中断时的真实调用和终态。故障套件同时运行浏览器/API 重启与 Worker 强制退出、过期租约拒写的原始回归用例；可通过 pytest --junitxml 保存逐项结果。

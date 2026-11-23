@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 from fastapi.testclient import TestClient
 from playwright.sync_api import expect, sync_playwright
+from redis import Redis
 from test_evaluation_runs import ROOT, create, prepare
 
 from app.api.main import create_app
@@ -45,7 +46,12 @@ def process(args: list[str], env: dict[str, str]) -> Iterator[subprocess.Popen[b
     finally:
         if child.poll() is None:
             child.terminate()
-        child.wait(timeout=10)
+        try:
+            child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=5)
+            raise
 
 
 def ready(url: str) -> None:
@@ -149,9 +155,20 @@ def test_batch_browser_and_api_restart(catalog: tuple[Settings, dict[str, str]])
             "--no-access-log",
         ]
         env = child_env(config)
-        with process(["-m", "app.worker.main"], env), sync_playwright() as pw:
+        with process(["-m", "app.worker.main"], env) as worker, sync_playwright() as pw:
             browser = pw.chromium.launch(channel="chrome", headless=True)
             page = browser.new_page()
+            # Abort the browser's real streaming fetch at a known boundary. Keep the
+            # React component mounted so its real Last-Event-ID reconnect is exercised.
+            page.add_init_script("""const fetchOriginal = window.fetch.bind(window);
+              window.fetch = (url, opts) => {
+                if (String(url).endsWith('/progress')) {
+                  const cut = new AbortController();
+                  window.disconnectProgress = () => cut.abort();
+                  opts = {...opts, signal: AbortSignal.any([opts.signal, cut.signal])};
+                }
+                return fetchOriginal(url, opts);
+              };""")
             with process(args, env) as first:
                 ready(url)
                 page.goto(url)
@@ -186,10 +203,25 @@ def test_batch_browser_and_api_restart(catalog: tuple[Settings, dict[str, str]])
                         if line.startswith("data: ")
                     )
                     assert first_event["total"] == 22 and "secret" not in first_event
+                expect(page.get_by_text("实时连接", exact=True)).to_be_visible()
+                page.context.set_offline(True)
+                page.evaluate("window.disconnectProgress()")
+                channel = "evaluations:progress:" + run["id"]
+                with Redis.from_url(config.redis_url.get_secret_value()) as redis:
+                    until = time.monotonic() + 5
+                    while redis.pubsub_numsub(channel)[0][1] != 0:
+                        assert time.monotonic() < until, "SSE subscriber survived disconnect"
+                        time.sleep(0.025)
                 old_pid = first.pid
             with process(args, env) as restarted:
                 ready(url)
                 assert restarted.pid != old_pid
+                with page.expect_request(
+                    lambda req: (
+                        req.url.endswith("/progress") and bool(req.headers.get("last-event-id"))
+                    )
+                ):
+                    page.context.set_offline(False)
                 with httpx.Client(base_url=url, headers=headers, timeout=20) as client:
                     assert (
                         client.get(runpath).json()["data"]["snapshot_digest"]
@@ -241,6 +273,8 @@ def test_batch_browser_and_api_restart(catalog: tuple[Settings, dict[str, str]])
                     assert client.patch(tp, json={"description": "x"}).status_code == 409
                     assert client.get(runpath).json()["data"]["score_counts"]["OK"] == 22
             browser.close()
+        if os.name == "posix":
+            assert worker.returncode == 0, "Worker failed to shut down cleanly on SIGTERM"
     finally:
         proceed.set()
         target.shutdown()

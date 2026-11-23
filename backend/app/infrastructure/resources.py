@@ -74,7 +74,7 @@ class Resources:
             limits = await row(
                 db,
                 """SELECT target_max_parallel,rpm,enabled,
-                (next_call_at IS NULL OR next_call_at<=now()) AS due
+                extract(epoch FROM next_call_at-clock_timestamp()) AS wait_s
                 FROM projects WHERE id=:p FOR UPDATE""",
                 p=project,
             )
@@ -90,7 +90,11 @@ class Resources:
             count = await db.scalar(
                 text("SELECT count(*) FROM call_leases WHERE quota_key=:q"), {"q": quota}
             )
-            if not limits["due"] or count >= limits["target_max_parallel"]:
+            rpm_wait = float(limits["wait_s"] or 0)
+            if rpm_wait > 0 or count >= limits["target_max_parallel"]:
+                wire = active.get()
+                if wire and rpm_wait > 0:
+                    wire.quota_available_in = rpm_wait
                 raise Fault(429, "TARGET_LIMIT", "项目调用达到限额")
             lease = await self.reserve_call(db, quota, timeout)
             await db.execute(
@@ -131,7 +135,7 @@ class Resources:
             if counts["active"] >= account.max_parallel or counts["recent"] >= account.rpm:
                 wire = active.get()
                 if wire and counts["recent"] >= account.rpm:
-                    wire.retry_after = str(max(1, int(counts["rpm_wait"])))
+                    wire.quota_available_in = max(1, int(counts["rpm_wait"]))
                 raise Fault(429, "JUDGE_LIMIT", "裁判账户额度已用完")
             lease = await self.reserve_call(db, quota, timeout)
             await db.execute(

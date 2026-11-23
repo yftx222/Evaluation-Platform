@@ -22,7 +22,7 @@ from app.infrastructure.resources import Resources, Settings
 from app.plugins.evaluator_releases import PHASE2_BUILD
 from app.plugins.evaluators import BUILD
 from app.worker.execution import CaseRunner
-from app.worker.retry import delay, retry_after
+from app.worker.retry import delay, quota_delay, retry_after
 from app.worker.scheduler import claim, initialize, reconcile, release
 from app.worker.settings import WorkerSettings
 from app.worker.trace import AttemptTraceIssuer
@@ -54,6 +54,13 @@ def test_retry_decisions() -> None:
             verified=verified,
         )
 
+    deadline = now + timedelta(seconds=30)
+    assert [quota_delay(pol, n, None, deadline) for n in (1, 2, 3, 40)] == [0.5, 1, 2, 10]
+    assert quota_delay(pol, 40, 3, deadline) == 3
+    assert quota_delay(pol, 1, 60, deadline) is None
+    tiny = ExecutionPolicy(initial_backoff_ms=1, max_backoff_ms=1)
+    assert quota_delay(tiny, 1, None, deadline) == 0.25
+    assert check("TARGET_LIMIT", "unknown", None, count=0) is None
     assert check("TARGET_RATE_LIMIT", "sent", 429, "4") == 4
     assert check("TARGET_RATE_LIMIT", "sent", 429, "25") is None
     assert check("TARGET_HTTP_ERROR", "sent", 503) is None

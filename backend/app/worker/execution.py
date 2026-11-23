@@ -22,7 +22,7 @@ from app.infrastructure.attempt_http import Wire, observe
 from app.infrastructure.resources import Resources, Settings
 from app.plugins.http_adapter import DestinationPolicy, registry
 from app.plugins.judge import CompatibleJudge
-from app.worker.retry import delay
+from app.worker.retry import QUOTA_ERRORS, delay, quota_delay
 from app.worker.scheduler import Lease
 from app.worker.trace import AttemptTraceIssuer
 
@@ -357,32 +357,40 @@ class CaseRunner:
             if run_status == "CANCEL_REQUESTED":
                 return
             stage, code = state["stage"], outcome.code
-            count = await db.scalar(
-                text("""SELECT count(*) FROM execution_attempts WHERE
-                execution_id=:c AND logical_step_key=:key AND status<>'ABANDONED'
-                AND coalesce(error_code,'') NOT IN ('TARGET_LIMIT','JUDGE_LIMIT')"""),
-                {"c": lease.case, "key": state["logical_step_key"]},
-            )
-            verified = (
-                policy.target_replay == "verified_idempotent"
-                and UUID(state["snap"]["project_version"]["id"])
-                in self.settings.verified_idempotent_versions
-            )
-            wait = (
-                delay(
-                    policy,
-                    stage=stage,
-                    count=count,
-                    code=code,
-                    delivery=outcome.delivery,
-                    status=wire.status,
-                    header=wire.retry_after,
-                    deadline=deadline,
-                    verified=verified,
+            wait = None
+            if code and code in policy.retryable_error_codes:
+                previous = await row(
+                    db,
+                    """SELECT count(*) FILTER (WHERE error_code IN ('TARGET_LIMIT','JUDGE_LIMIT'))
+                        AS waits, count(*) FILTER (WHERE coalesce(error_code,'') NOT IN
+                        ('TARGET_LIMIT','JUDGE_LIMIT')) AS calls FROM execution_attempts
+                        WHERE execution_id=:c AND logical_step_key=:key AND id<>:a
+                        AND status<>'ABANDONED'""",
+                    c=lease.case,
+                    key=state["logical_step_key"],
+                    a=lease.attempt,
                 )
-                if code
-                else None
-            )
+                if code in QUOTA_ERRORS and outcome.delivery == "not_sent":
+                    wait = quota_delay(
+                        policy, previous["waits"] + 1, wire.quota_available_in, deadline
+                    )
+                elif code not in QUOTA_ERRORS:
+                    verified = (
+                        policy.target_replay == "verified_idempotent"
+                        and UUID(state["snap"]["project_version"]["id"])
+                        in self.settings.verified_idempotent_versions
+                    )
+                    wait = delay(
+                        policy,
+                        stage=stage,
+                        count=previous["calls"] + 1,
+                        code=code,
+                        delivery=outcome.delivery,
+                        status=wire.status,
+                        header=wire.retry_after,
+                        deadline=deadline,
+                        verified=verified,
+                    )
             unknown = outcome.delivery == "unknown" and wait is None
             terminal = (
                 "UNKNOWN_DELIVERY"

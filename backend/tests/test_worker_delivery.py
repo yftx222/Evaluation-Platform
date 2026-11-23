@@ -37,6 +37,7 @@ from app.worker.trace import AttemptTraceIssuer
         "verified_503",
         "judge_invalid",
         "judge_429",
+        "quota_then_429",
         "echo_token",
         "before_send",
         "before_prediction",
@@ -49,6 +50,7 @@ from app.worker.trace import AttemptTraceIssuer
 )
 def test_live_delivery(catalog: tuple[Settings, dict[str, str]], scenario: str) -> None:
     settings, tokens = catalog
+    judge_recovers = scenario in ("judge_429", "quota_then_429")
     arrived, unblock = threading.Event(), threading.Event()
     calls: list[tuple[str, str, str | None]] = []
 
@@ -77,7 +79,7 @@ def test_live_delivery(catalog: tuple[Settings, dict[str, str]], scenario: str) 
                     unblock.wait(18)
             else:
                 payload = b"invalid"
-                if scenario == "judge_429":
+                if judge_recovers:
                     if sum(path == "/judge" for path, _, _ in calls) == 1:
                         status = 429
                     else:
@@ -153,7 +155,11 @@ def test_live_delivery(catalog: tuple[Settings, dict[str, str]], scenario: str) 
                 draft_id=ds["draft_id"],
                 reviewed_digest=draft["digest"],
             )
-            use_judge = scenario in ("kill_judge", "judge_invalid", "judge_429", "judge_timeout")
+            use_judge = judge_recovers or scenario in (
+                "kill_judge",
+                "judge_invalid",
+                "judge_timeout",
+            )
             if scenario == "judge_timeout":
                 j = f["judge"]
                 f["judge"] = create(
@@ -191,7 +197,7 @@ def test_live_delivery(catalog: tuple[Settings, dict[str, str]], scenario: str) 
                 evaluator_version_ids=roots,
                 policy={
                     "adapter_max_attempts": 3,
-                    "evaluator_max_attempts": 3,
+                    "evaluator_max_attempts": 2 if scenario == "quota_then_429" else 3,
                     "target_replay": "verified_idempotent",
                     "initial_backoff_ms": 10,
                     "jitter": False,
@@ -252,9 +258,28 @@ def test_live_delivery(catalog: tuple[Settings, dict[str, str]], scenario: str) 
                     "after_score",
                     "before_summary",
                 }
-                proc = await start(scenario in crashes or scenario.startswith("missing_"))
                 resources = Resources(settings)
+                if scenario == "quota_then_429":
+                    async with resources.transaction() as db:
+                        held = await resources.reserve_call(db, "judge:acct", 20)
+                proc = await start(scenario in crashes or scenario.startswith("missing_"))
                 try:
+                    if scenario == "quota_then_429":
+                        async with asyncio.timeout(10):
+                            while True:
+                                async with resources.transaction() as db:
+                                    count = await db.scalar(
+                                        text("""SELECT count(*) FROM
+                                        execution_attempts WHERE error_code='JUDGE_LIMIT'""")
+                                    )
+                                    if count >= 2:
+                                        await db.execute(
+                                            text("DELETE FROM call_leases WHERE id=:id"),
+                                            {"id": held["id"]},
+                                        )
+                                        break
+                                await asyncio.sleep(0.04)
+                        assert all(c[0] != "/judge" for c in calls)
                     if scenario in crashes:
                         assert await asyncio.wait_for(proc.wait(), 12) == 77
                         proc = await start()
@@ -299,6 +324,7 @@ def test_live_delivery(catalog: tuple[Settings, dict[str, str]], scenario: str) 
                         "pause": "COMPLETED",
                         "verified_503": "COMPLETED",
                         "judge_429": "COMPLETED",
+                        "quota_then_429": "COMPLETED",
                         "cancel": "CANCELLED",
                     }.get(scenario, "FAILED")
                     await until(expected)
@@ -346,8 +372,8 @@ def test_live_delivery(catalog: tuple[Settings, dict[str, str]], scenario: str) 
                     )
                     assert len(set(targets_seen)) == int(scenario != "missing_adapter")
                     judge_keys = [key for path, key, _ in calls if path == "/judge"]
-                    assert len(judge_keys) == int(use_judge) + int(scenario == "judge_429")
-                    if scenario == "judge_429":
+                    assert len(judge_keys) == int(use_judge) + int(judge_recovers)
+                    if judge_recovers:
                         assert len(set(judge_keys)) == 1 and judge_keys[0] != targets_seen[0]
                         assert len(result["scores"]) == 1 and result["scores"][0]["status"] == "OK"
                         async with resources.transaction() as db:

@@ -17,6 +17,8 @@ from app.plugins.evaluators import lookup
 from app.plugins.http_adapter import registry as adapters
 from app.plugins.scoring_functions import TYPES
 
+MAX_RUN_CASES = 10_000
+
 TASK = """SELECT id,project_id,name,description,archived_at,project_version_id,dataset_version_id,
     config_snapshot->'roots' AS evaluator_version_ids, config_snapshot->'policy' AS policy,
     config_digest,created_by,created_at FROM evaluation_tasks"""
@@ -95,7 +97,8 @@ async def snapshot(
         raise Fault(409, "PROJECT_DISABLED", "项目已停用")
     dv = await row(
         db,
-        """SELECT v.id,v.dataset_id,v.version,v.digest,v.state,d.archived
+        """SELECT v.id,v.dataset_id,v.version,v.digest,v.state,d.archived,
+                  (SELECT count(*) FROM evaluation_cases WHERE dataset_version_id=v.id) sample_count
                   FROM dataset_versions v JOIN datasets d ON d.id=v.dataset_id WHERE v.id=:v
                   FOR SHARE OF d,v""",
         v=body.dataset_version_id,
@@ -104,6 +107,8 @@ async def snapshot(
         raise Fault(409, "ARCHIVED", "数据集已归档")
     if dv.pop("state") != "PUBLISHED":
         raise Fault(422, "UNPUBLISHED_DATASET", "必须选择已发布的数据集版本")
+    if dv.pop("sample_count") > MAX_RUN_CASES:
+        raise Fault(422, "RUN_CASE_LIMIT", f"单次评测最多允许 {MAX_RUN_CASES} 条样本，请拆分数据集")
     cfg = await version_adapter_config(db, p, body.project_version_id)
     if "execute" not in adapters.capabilities(cfg.kind, cfg.build):
         raise Fault(422, "INCOMPATIBLE_ADAPTER", "该构建未声明执行样本能力")

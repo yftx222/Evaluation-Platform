@@ -39,6 +39,7 @@ class Wire:
     connect_failed: bool = False
     started: bool = False
     status: int | None = None
+    quota_available_in: float | None = None
     retry_after: str | None = None
     request_id: str | None = None
 
