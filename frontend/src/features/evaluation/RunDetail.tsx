@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import RunReport from "./RunReport";
+import ScoreEvidence from "./ScoreEvidence";
+import TraceTimeline from "./TraceTimeline";
 import type { Call, Run, Page } from "./api";
 import { base, labels, date, pretty, terminal } from "./api";
 
@@ -6,6 +9,9 @@ type Attempt = {
   id: string;
   stage: string;
   attempt_no: number;
+  trace_id: string | null;
+  trace_status: "OPEN" | "COMPLETE" | "PARTIAL" | "MISSING" | null;
+  trace_event_count: number | null;
   status: string;
   delivery_state: string;
   error_code: string | null;
@@ -84,12 +90,14 @@ export default function RunDetail({
   token,
   call,
   write,
+  otherRuns,
   onStatus,
 }: {
   id: string;
   token: string;
   call: Call;
   write: boolean;
+  otherRuns: string[];
   onStatus: (id: string, status: string) => void;
 }) {
   const path = base + "/runs/" + id;
@@ -101,7 +109,21 @@ export default function RunDetail({
     [results, setResults] = useState<Page<Result> | null>(null),
     [updated, setUpdated] = useState(0),
     [statusFilter, setFilter] = useState("");
+  const [eventId,setEventId]=useState("");
+  const [traceOpen,setTraceOpen]=useState("");
   const [selected, setSelected] = useState("");
+  const [reportOpen,setReportOpen]=useState(false);
+  const [drillId,setDrillId]=useState("");
+  const [drill,setDrill]=useState<Result|null>(null);
+  useEffect(()=>{
+    if(!drillId)return;
+    let live=true;
+    call<Page<Result>>(path+"/results?execution_id="+encodeURIComponent(drillId)).then(v=>{
+      if(live && v.items[0]){setDrill(v.items[0]);setSelected(drillId);}
+    }).catch(e=>live&&setError(String(e)));
+    return ()=>{live=false};
+  },[call,path,drillId]);
+  useEffect(()=>{if(drill && selected===drill.id)document.getElementById("case-detail-"+drill.id)?.focus();},[drill,selected]);
   const [statsOpen, setStatsOpen] = useState(false);
   useEffect(() => {
     if (!statsOpen) return;
@@ -232,7 +254,7 @@ export default function RunDetail({
       setBusy(false);
     }
   }
-  const item = results?.items.find((c) => c.id === selected);
+  const item = results?.items.find((c) => c.id === selected) ?? (drill?.id === selected ? drill : null);
   return (
     <section aria-label="运行详情">
       <div className="eval-heading">
@@ -278,6 +300,9 @@ export default function RunDetail({
               )}
             </div>
           )}
+          {terminal(run.status) && <div><button aria-expanded={reportOpen} onClick={()=>setReportOpen(!reportOpen)}>{reportOpen?"收起评测报告":"查看评测报告"}</button>
+            {reportOpen && <RunReport id={id} token={token} call={call} otherRuns={otherRuns}
+              onCase={v=>{if(v===drillId){setSelected(v);document.getElementById("case-detail-"+v)?.focus();}else setDrillId(v);}}/>}</div>}
           <details onToggle={(e) => setStatsOpen(e.currentTarget.open)}>
             <summary>运行快照和评分统计</summary>
             <p>
@@ -372,7 +397,7 @@ export default function RunDetail({
             </button>
           </div>
           {item && (
-            <article>
+            <article id={"case-detail-"+item.id} tabIndex={-1}>
               <h4>样本详情 · {item.case_key}</h4>
               <p>{item.adapter_error_code}</p>
               <b>原始输入（已脱敏）</b>
@@ -393,7 +418,7 @@ export default function RunDetail({
               <b>评分结果</b>
               <ul>
                 {item.scores.map((s) => (
-                  <li key={s.id}>
+                  <li key={s.id} id={"score-"+s.id}>
                     {
                       run.snapshot.evaluator_plan.find(
                         (v) => v.id === s.evaluator_version_id,
@@ -402,6 +427,9 @@ export default function RunDetail({
                     · {labels[s.status]} · {s.score ?? "—"}{" "}
                     {s.passed === null ? "" : s.passed ? "通过" : "未通过"} ·{" "}
                     {s.reason}
+                    <ScoreEvidence key={s.id} scoreId={s.id} call={call}
+                      names={Object.fromEntries(run.snapshot.evaluator_plan.map(v=>[v.id,v.name]))}
+                      onEvent={(trace,event)=>{setTraceOpen(trace); setEventId(event);}}/>
                     {s.details.model && (
                       <p>
                         裁判模型 {s.details.model} · Token 用量{" "}
@@ -411,12 +439,32 @@ export default function RunDetail({
                   </li>
                 ))}
               </ul>
-              <p>
-                Trace：
-                {item.trace_ids.length
-                  ? item.trace_ids.join("、")
-                  : "尚无已采集轨迹"}
-              </p>
+              {item.trace_ids.length ? (
+                <ul aria-label="执行轨迹">
+                  {item.attempts
+                    .filter((a) => a.trace_id && a.trace_status)
+                    .map((a) => (
+                      <li key={a.id}>
+                        第 {a.attempt_no} 次尝试 ·{" "}
+                        {
+                          {
+                            OPEN: "采集中",
+                            COMPLETE: "完整",
+                            PARTIAL: "部分缺失",
+                            MISSING: "未收到事件",
+                          }[a.trace_status!]
+                        }{" "}
+                        · {a.trace_event_count} 条事件 · {a.trace_id}{" "}
+                        <button type="button" aria-expanded={traceOpen===a.trace_id}
+                          onClick={()=>{setEventId("");setTraceOpen(traceOpen===a.trace_id?"":a.trace_id!);}}>查看时间线</button>
+                        {traceOpen===a.trace_id && a.trace_id &&
+                          <TraceTimeline key={a.trace_id} call={call} id={a.trace_id} eventId={eventId}/>}
+                      </li>
+                    ))}
+                </ul>
+              ) : (
+                <p>尚无已采集轨迹</p>
+              )}
             </article>
           )}
         </>

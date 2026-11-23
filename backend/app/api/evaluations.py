@@ -13,6 +13,7 @@ from app.application.catalog.dataset_files import sensitive
 from app.application.catalog.store import Fault, page, row
 from app.application.runner import plans, runs
 from app.contracts.runs import Empty, TaskCreate, TaskPatch
+from trace_sdk.privacy import PRIVATE_VALUE
 
 router = APIRouter(prefix="/api/v1/evaluations", tags=["evaluations"])
 Key = Annotated[
@@ -41,7 +42,13 @@ async def create(req: Request, db: Db, who: User, body: TaskCreate) -> dict[str,
     await authorize(db, who, project, "W", lock=True)
     if body.project_id is not None and body.project_id != project:
         raise Fault(422, "PROJECT_MISMATCH", "项目版本不属于指定项目")
-    task = await plans.create_task(db, project, body, f"{who.issuer}/{who.subject}")
+    task = await plans.create_task(
+        db,
+        project,
+        body,
+        f"{who.issuer}/{who.subject}",
+        req.app.state.settings.report_policies.get(body.project_version_id),
+    )
     await record(req, db, who, project, "create", "task", task["id"], ["config_digest"])
     return reply(req, task)
 
@@ -77,7 +84,13 @@ async def preview(req: Request, db: Db, who: User, body: TaskCreate) -> dict[str
     await authorize(db, who, p, "W")
     if body.project_id is not None and body.project_id != p:
         raise Fault(422, "PROJECT_MISMATCH", "项目版本不属于指定项目")
-    snap = await plans.snapshot(db, p, body, validate_inputs=True)
+    snap = await plans.snapshot(
+        db,
+        p,
+        body,
+        validate_inputs=True,
+        report_policy=req.app.state.settings.report_policies.get(body.project_version_id),
+    )
     return reply(req, plans.public_snapshot(snap))
 
 
@@ -172,6 +185,7 @@ async def results(
     args: ListArgs,
     status: str | None = None,
     case_key: str | None = None,
+    execution_id: UUID | None = None,
     evaluator_version_id: UUID | None = None,
 ) -> dict[str, object]:
     await authorize(
@@ -187,6 +201,9 @@ async def results(
     if status is not None:
         sql += " AND c.status=:status"
         params["status"] = status
+    if execution_id is not None:
+        sql += " AND c.id=:execution"
+        params["execution"] = execution_id
     if case_key is not None:
         sql += " AND s.case_key=:key"
         params["key"] = case_key
@@ -197,11 +214,20 @@ async def results(
     result = await page(db, sql, params, args.cursor, args.limit, str(who), args.sort)
     for item in result["items"]:
         item["input"] = sensitive(item["input"])
-        item["trace_status"] = "REFERENCED" if item["trace_ids"] else "NOT_COLLECTED"
+        attempts = [a for a in item["attempts"] if a["trace_id"]]
+        selected = next(
+            (a for a in attempts if a["id"] == str(item["prediction_attempt_id"])),
+            attempts[-1] if attempts else None,
+        )
+        item["trace_status"] = selected["trace_status"] if selected else "NOT_COLLECTED"
         item["prediction"] = sensitive(item["prediction"])
         for score in item["scores"]:
             usage = score.get("details", {}).get("usage")
             safe = sensitive(score)
+            if "evidence" in safe:
+                safe["evidence"] = [
+                    PRIVATE_VALUE.sub("[REDACTED]", ref) for ref in safe["evidence"]
+                ]
             if isinstance(usage, dict):
                 safe["details"]["usage"] = {
                     k: v

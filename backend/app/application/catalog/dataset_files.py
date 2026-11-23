@@ -174,6 +174,14 @@ def parse(data: bytes, fmt: Format, mapping: dict[str, str]) -> list[Case]:
     return result
 
 
+def csv_cell(value: str) -> str:
+    if value.startswith(("\t", "\r", "\n")) or value.lstrip(" \t\r\n\ufeff").startswith(
+        ("=", "+", "-", "@", "＝", "＋", "－", "＠")
+    ):
+        return "'" + value
+    return value
+
+
 class ExportWriter:
     def __init__(self, stream: BinaryIO, fmt: Format) -> None:
         self.stream, self.fmt, self.count = stream, fmt, 0
@@ -196,15 +204,7 @@ class ExportWriter:
             line = io.StringIO(newline="")
             # Case values are already JSON literals. Guard raw table cells too,
             # including leading whitespace/control characters recognized by spreadsheets.
-            csv.writer(line).writerow(
-                "'" + value
-                if value.startswith(("\t", "\r", "\n"))
-                or value.lstrip(" \t\r\n\ufeff").startswith(
-                    ("=", "+", "-", "@", "＝", "＋", "－", "＠")
-                )
-                else value
-                for value in cells
-            )
+            csv.writer(line).writerow(csv_cell(value) for value in cells)
             self.stream.write(line.getvalue().encode())
 
     def append(self, case: dict[str, Any]) -> None:

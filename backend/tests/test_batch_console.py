@@ -7,6 +7,7 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -80,7 +81,51 @@ def test_batch_browser_and_api_restart(catalog: tuple[Settings, dict[str, str]])
             proceed.wait(16)
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(json.dumps({"answer": data["query"]}).encode())
+            stamp = datetime.now(UTC).isoformat()
+            events = [
+                {
+                    "event_key": "step",
+                    "sequence": 1,
+                    "name": "选择资料",
+                    "event_type": "AGENT_STEP",
+                    "status": "SUCCEEDED",
+                    "started_at": stamp,
+                },
+                {
+                    "event_key": "lookup",
+                    "sequence": 2,
+                    "parent_event_key": "step",
+                    "name": "查找文档",
+                    "event_type": "RETRIEVAL",
+                    "status": "SUCCEEDED",
+                    "started_at": stamp,
+                    "output": {
+                        "document_refs": ["public-42"],
+                        "scores": [0.88],
+                        "api_key": "mask-me",
+                    },
+                },
+                {
+                    "event_key": "final",
+                    "sequence": 3,
+                    "parent_event_key": "step",
+                    "name": "完成回答",
+                    "event_type": "FINAL_OUTPUT",
+                    "status": "SUCCEEDED",
+                    "started_at": stamp,
+                    "output": {"output_ref": "prediction.answer"},
+                },
+            ]
+            wire = {
+                "answer": data["query"],
+                "observations": {
+                    "trace": {
+                        "events": events,
+                        "finalize": {"outcome": "COMPLETE", "contiguous": True, "last_sequence": 3},
+                    }
+                },
+            }
+            self.wfile.write(json.dumps(wire).encode())
 
     target = ThreadingHTTPServer(("127.0.0.1", 0), Target)
     th = threading.Thread(target=target.serve_forever, daemon=True)
@@ -109,8 +154,10 @@ def test_batch_browser_and_api_restart(catalog: tuple[Settings, dict[str, str]])
                 "/projects/" + project + "/versions",
                 label="console-v1",
                 deployment_ref="fixed",
+                trace_capabilities={"mode": "embedded", "required_events": ["FINAL_OUTPUT"]},
                 adapter={
                     "endpoint": local + "/ask",
+                    "options": {"extensions_path": "observations"},
                     "probe_endpoint": local + "/ready",
                     "timeout_s": 20,
                 },
@@ -259,6 +306,57 @@ def test_batch_browser_and_api_restart(catalog: tuple[Settings, dict[str, str]])
                     page.get_by_role("button", name="sample-").first.click()
                     expect(page.get_by_text("原始输入（已脱敏）")).to_be_visible()
                     expect(page.locator("article")).not_to_contain_text("mask-me")
+                    detail_requests = []
+                    page.on(
+                        "request",
+                        lambda req: (
+                            detail_requests.append(req.url) if "/events/" in req.url else None
+                        ),
+                    )
+                    page.get_by_role("button", name="查看时间线").click()
+                    timeline = page.get_by_role("region", name="轨迹时间线")
+                    expect(timeline.get_by_text("#2 检索 · 查找文档")).to_be_visible()
+                    assert detail_requests == []
+                    timeline.get_by_role("button", name="按父子关系查看").click()
+                    timeline.get_by_role("button", name="子事件").first.click()
+                    child = (
+                        timeline.get_by_role("listitem")
+                        .filter(has=page.get_by_text("#2 检索 · 查找文档", exact=True))
+                        .last
+                    )
+                    child.get_by_role("button", name="事件详情").click()
+                    expect(child).to_contain_text("public-42")
+                    expect(child).not_to_contain_text("mask-me")
+                    assert len(detail_requests) == 1
+                    page.get_by_role("button", name="查看评分证据").click()
+                    citations = page.get_by_role("region", name="评分证据")
+                    expect(citations.get_by_text("/answer", exact=True)).to_be_visible()
+                    citations.get_by_role("button", name="定位轨迹事件").click()
+                    linked = timeline.get_by_role("region", name="证据对应事件")
+                    expect(linked).to_contain_text("#3 完成回答")
+                    expect(linked).to_contain_text("prediction.answer")
+                    page.get_by_role("button", name="查看评测报告").click()
+                    report = page.get_by_role("region", name="评测报告", exact=True)
+                    expect(report.get_by_text("评分器表现", exact=True)).to_be_visible()
+                    report.get_by_label("分组维度").select_option("tag")
+                    report.get_by_label("筛选条件").select_option("all")
+                    current_page = page.get_by_role("table").filter(
+                        has=page.get_by_role("columnheader", name="尝试次数", exact=True)
+                    )
+                    visible_cases = set(current_page.get_by_role("button").all_inner_texts())
+                    candidates = report.get_by_role("button", name="sample-")
+                    expect(candidates.first).to_be_visible()
+                    candidate_name = next(
+                        k for k in candidates.all_inner_texts() if k not in visible_cases
+                    )
+                    report.get_by_role("button", name=candidate_name, exact=True).click()
+                    expect(
+                        page.get_by_role("heading", name="样本详情 · " + candidate_name, exact=True)
+                    ).to_be_visible()
+                    expect(page.locator("article")).to_be_focused()
+                    with page.expect_download() as downloaded:
+                        report.get_by_role("button", name="导出报告 CSV").click()
+                    assert downloaded.value.suggested_filename.endswith(".csv")
                     tp = ROOT + "/evaluations/tasks/" + run["task_id"]
                     page.get_by_role("button", name="归档任务").click()
                     expect(page.get_by_text("已归档", exact=True).last).to_be_visible()

@@ -84,7 +84,17 @@ def test_readiness_and_logs(services: Settings, caplog: pytest.LogCaptureFixture
     assert "private-sentinel" not in caplog.text
 
 
-@pytest.mark.parametrize("catalog", ["0006_worker_scheduler", "0007_task_archive"], indirect=True)
+@pytest.mark.parametrize(
+    "catalog",
+    [
+        "0006_worker_scheduler",
+        "0007_task_archive",
+        "0008_attempt_traces",
+        "0009_trace_capabilities",
+        "0010_trace_archives",
+    ],
+    indirect=True,
+)
 def test_worker_schema_compatibility(catalog: tuple[Settings, dict[str, str]]) -> None:
     settings, _ = catalog
 
@@ -93,14 +103,19 @@ def test_worker_schema_compatibility(catalog: tuple[Settings, dict[str, str]]) -
         try:
             async with resources.transaction() as db:
                 current = await db.scalar(text("SELECT version_num FROM alembic_version"))
-            if current == "0006_worker_scheduler":
-                with pytest.raises(RuntimeError, match="0007_task_archive.*0006_worker_scheduler"):
+            if current in {
+                "0006_worker_scheduler",
+                "0007_task_archive",
+                "0008_attempt_traces",
+                "0009_trace_capabilities",
+            }:
+                with pytest.raises(RuntimeError, match=f"0010_trace_archives.*{current}"):
                     await initialize(resources, WorkerSettings())
                 return
             await initialize(resources, WorkerSettings())
             async with resources.transaction() as db:
                 await db.execute(text("ALTER TABLE worker_capacity ADD COLUMN note text"))
-                await db.execute(text("UPDATE alembic_version SET version_num='0008_add_note'"))
+                await db.execute(text("UPDATE alembic_version SET version_num='0011_add_note'"))
             await initialize(resources, WorkerSettings())
             async with resources.transaction() as db:
                 await db.execute(

@@ -149,3 +149,19 @@ code {
 .eval [role=alert] {color:#983821}
 .eval details {margin:.6rem 0}
 .eval summary {cursor:pointer}
+
+.trace-events { padding-left: 1.5rem; }
+.trace-events > li { margin: .65rem 0; padding-left: .5rem; border-left: 2px solid #bcccd8; }
+.trace-events > li.trace-failed { border-color: #bd3232; color: #8a2222; }
+.trace-events pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; }
+
+.run-report { margin-block: 1rem; overflow-x: auto; }
+.report-rates { display: grid; grid-template-columns: repeat(auto-fit,minmax(145px,1fr)); gap: 1rem; margin: 1rem 0; }
+.report-rates > div { display: grid; gap: .3rem; }
+.report-rates meter { width: 100%; }
+.run-report td small { display: block; }
+.run-report dd { margin: .2rem 0 .6rem; overflow-wrap: anywhere; }
+.run-report td, .run-report th { text-align: left; }
+.report-distributions { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem; }
+.report-distribution { margin:1rem 0; }
+.report-distribution div { display:flex; align-items:center; gap:.5rem; }

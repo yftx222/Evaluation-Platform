@@ -20,6 +20,7 @@ type Row = {
   label?: string;
   deployment_ref?: string;
   build?: string;
+  trace_capabilities?: Record<string,unknown> | null;
   prefix?: string;
   revoked_at?: string;
   expires_at?: string;
@@ -353,9 +354,11 @@ function Details({
                 const options = jsonObject(d, "options", "协议选项");
                 if (plugin.kind === "openai_compatible")
                   options.model = val(d, "model");
+                const capabilities = val(d,"trace_capabilities").trim();
                 const created = await call<Row>(path + "/versions", "POST", {
                   label: val(d, "label"),
                   deployment_ref: val(d, "deployment_ref"),
+                  ...(capabilities ? {trace_capabilities: jsonObject(d,"trace_capabilities","采集能力")} : {}),
                   adapter: {
                     kind: plugin.kind,
                     build: plugin.build,
@@ -480,6 +483,13 @@ function Details({
                   <pre>{JSON.stringify(plugin.config_schema, null, 2)}</pre>
                 </details>
               )}
+              <details>
+                <summary>执行轨迹采集方式</summary>
+                <label>采集能力（可选 JSON）
+                  <textarea name="trace_capabilities" placeholder={'{"mode":"embedded","event_types":["MODEL_CALL","FINAL_OUTPUT"],"required_events":["FINAL_OUTPUT"]}'} />
+                </label>
+                <small>留空使用协议的回调模式。内嵌事件用 embedded，关闭用 disabled。能力随版本固定。</small>
+              </details>
               <Input name="headers" label="请求头 JSON" initial="{}" />
               <Input name="secret_ref" label="密钥引用" optional />
               <Input name="secret_version" label="密钥版本" optional />
@@ -488,9 +498,11 @@ function Details({
           <h3>已发布版本</h3>
           {versions.map((v) => (
             <div className="row" key={v.id}>
-              <span>
+              <div>
                 {v.label} · {v.deployment_ref} · {v.kind} / {v.build}
-              </span>
+                {v.trace_capabilities && <details><summary>已发布的采集能力</summary>
+                  <pre>{JSON.stringify(v.trace_capabilities,null,2)}</pre></details>}
+              </div>
               {admin && (
                 <Button
                   onClick={() =>

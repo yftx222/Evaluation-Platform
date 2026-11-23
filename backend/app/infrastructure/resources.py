@@ -13,11 +13,14 @@ from app.application.access.identity import DevelopmentIdentity
 from app.application.catalog.store import Fault, row
 from app.contracts.evaluators import JudgeAccount
 from app.contracts.http import TargetRule
+from app.contracts.reports import ReportPolicy
 from app.infrastructure.attempt_http import active
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_prefix="EVAL_")
+    model_config = SettingsConfigDict(
+        env_file=".env", extra="ignore", env_prefix="EVAL_", env_parse_none_str="null"
+    )
     database_url: SecretStr = SecretStr("postgresql+asyncpg://eval@127.0.0.1:5432/eval")
     redis_url: SecretStr = SecretStr("redis://127.0.0.1:6379/0")
     mode: Literal["development", "production"] = "development"
@@ -25,6 +28,8 @@ class Settings(BaseSettings):
     targets: dict[str, list[TargetRule]] = Field(default_factory=dict)
     secrets: dict[str, dict[str, dict[str, SecretStr]]] = Field(default_factory=dict)
     judge_accounts: dict[str, JudgeAccount] = Field(default_factory=dict)
+    report_policies: dict[UUID, ReportPolicy] = Field(default_factory=dict)
+    trace_retention_days: int | None = Field(None, ge=1, le=36500)
     trace_target_versions: set[UUID] = Field(default_factory=set)
     verified_idempotent_versions: set[UUID] = Field(default_factory=set)
     pool_size: int = Field(5, ge=1, le=100)

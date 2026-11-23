@@ -11,6 +11,7 @@ from app.application.catalog.evaluators import graph
 from app.application.catalog.store import Fault, digest, row, version_adapter_config
 from app.contracts.adapters import UnifiedRequest
 from app.contracts.http import AdapterConfig
+from app.contracts.reports import ReportPolicy
 from app.contracts.runs import TaskCreate
 from app.plugins.evaluator_releases import installed
 from app.plugins.evaluators import lookup
@@ -82,11 +83,16 @@ async def check_inputs(
 
 
 async def snapshot(
-    db: AsyncSession, p: UUID, body: TaskCreate, *, validate_inputs: bool
+    db: AsyncSession,
+    p: UUID,
+    body: TaskCreate,
+    *,
+    validate_inputs: bool,
+    report_policy: ReportPolicy | None = None,
 ) -> dict[str, Any]:
     pv = await row(
         db,
-        """SELECT v.id,v.label,v.deployment_ref,v.digest,v.adapter_id,
+        """SELECT v.id,v.label,v.deployment_ref,v.digest,v.adapter_id,v.trace_capabilities,
                  a.digest AS adapter_digest,p.slug,p.enabled FROM project_versions v
                  JOIN project_adapters a ON a.id=v.adapter_id JOIN projects p ON p.id=v.project_id
                  WHERE v.id=:v AND p.id=:p FOR SHARE OF p""",
@@ -149,6 +155,8 @@ async def snapshot(
         )
     )
 
+    if report_policy is not None:
+        serialized["report_policy"] = report_policy.model_dump(mode="json")
     return serialized
 
 
@@ -177,8 +185,14 @@ def public_snapshot(snap: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def create_task(db: AsyncSession, p: UUID, body: TaskCreate, actor: str) -> dict[str, Any]:
-    snap = await snapshot(db, p, body, validate_inputs=True)
+async def create_task(
+    db: AsyncSession,
+    p: UUID,
+    body: TaskCreate,
+    actor: str,
+    report_policy: ReportPolicy | None = None,
+) -> dict[str, Any]:
+    snap = await snapshot(db, p, body, validate_inputs=True, report_policy=report_policy)
     task = uuid4()
     positions = {str(root): i for i, root in enumerate(body.evaluator_version_ids)}
     await db.execute(

@@ -13,7 +13,7 @@ from app.worker.settings import WorkerSettings
 DUE = """(c.status='READY' OR (c.status='RETRY_WAIT' AND c.next_retry_at<=clock_timestamp()))"""
 LIVE = """c.status='RUNNING' AND c.lease_expires_at>clock_timestamp()"""
 CHANNEL = "evaluations:wake"
-MIN_SCHEMA = "0007_task_archive"
+MIN_SCHEMA = "0010_trace_archives"
 
 
 @dataclass(frozen=True)

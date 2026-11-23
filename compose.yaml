@@ -5,6 +5,8 @@ x-api: &api
     EVAL_DATABASE_URL: postgresql+asyncpg://eval:${POSTGRES_PASSWORD:?set a URL-safe local password}@postgres:5432/eval
     EVAL_REDIS_URL: redis://redis:6379/0
     EVAL_MODE: development
+    EVAL_REPORT_POLICIES: ${EVAL_REPORT_POLICIES:-{}}
+    EVAL_TRACE_RETENTION_DAYS: ${EVAL_TRACE_RETENTION_DAYS:-null}
     EVAL_IDENTITIES: ${EVAL_IDENTITIES:-[]}
     EVAL_JUDGE_ACCOUNTS: ${EVAL_JUDGE_ACCOUNTS:-{}}
     EVAL_TARGETS: ${EVAL_TARGETS:-{}}

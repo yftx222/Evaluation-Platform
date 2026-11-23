@@ -24,9 +24,11 @@ RESULT = """SELECT c.id,c.id AS execution_id,c.created_at,c.run_id,c.case_id,s.c
     s.input,c.status,
     c.stage,c.attempt_count,c.latency_ms,c.prediction,c.prediction_attempt_id,c.adapter_error_code,
     COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'stage',a.stage,'status',a.status,
+    'trace_id',a.trace_id,'trace_status',t.status,'trace_event_count',t.event_count,
     'attempt_no',a.attempt_no,'epoch',a.epoch,'delivery_state',a.delivery_state,
     'evaluator_version_id',a.evaluator_version_id,'error_code',a.error_code) ORDER BY a.attempt_no)
-    FROM execution_attempts a WHERE a.execution_id=c.id),'[]') AS attempts,
+    FROM execution_attempts a LEFT JOIN traces t ON t.id=a.trace_id
+    WHERE a.execution_id=c.id),'[]') AS attempts,
     COALESCE((SELECT jsonb_agg(to_jsonb(g) ORDER BY g.evaluator_version_id)
     FROM evaluation_scores g WHERE g.execution_id=c.id),'[]') AS scores,
     COALESCE((SELECT jsonb_agg(a.trace_id ORDER BY a.attempt_no) FROM execution_attempts a
@@ -129,6 +131,8 @@ async def start(db: AsyncSession, t: UUID, key: str) -> tuple[dict[str, Any], bo
         policy=snap["policy"],
     )
     verified = await snapshot(db, task["project_id"], selection, validate_inputs=False)
+    if "report_policy" in snap:
+        verified["report_policy"] = snap["report_policy"]
     if "required_adapter_capabilities" not in snap:
         verified.pop("required_adapter_capabilities", None)
     for added in ("retryable_error_codes", "run_timeout_s"):

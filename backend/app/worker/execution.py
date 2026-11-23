@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.access.identity import DevelopmentSecretResolver, SecretResolver
 from app.application.catalog.evaluators import evaluate_node
 from app.application.catalog.store import Fault, row, version_adapter_config
-from app.contracts.adapters import AdapterError, TraceWriteScope, UnifiedRequest, UnifiedResponse
+from app.application.trace import embedded, evidence
+from app.contracts.adapters import AdapterError, UnifiedRequest, UnifiedResponse
 from app.contracts.evaluators import EvaluationResult, Trial
 from app.contracts.runs import ExecutionPolicy
+from app.contracts.traces import BoundTraceWriteScope
 from app.infrastructure.attempt_http import Wire, observe
 from app.infrastructure.resources import Resources, Settings
 from app.plugins.http_adapter import DestinationPolicy, registry
@@ -46,6 +48,7 @@ async def lock_step(db: AsyncSession, lease: Lease) -> str:
 
 @dataclass
 class Outcome:
+    embedded_trace: tuple[Any, Any] | None = None
     prediction: UnifiedResponse | None = None
     score: EvaluationResult | None = None
     code: str | None = None
@@ -70,6 +73,9 @@ async def yield_case(
 
 
 async def record_score(db: AsyncSession, lease: Lease, result: EvaluationResult) -> None:
+    result = result.model_copy(
+        update={"evidence": await evidence.bind(db, lease.case, result.evidence)}
+    )
     values = result.model_dump()
     values.update(
         c=lease.case,
@@ -260,8 +266,16 @@ class CaseRunner:
             trace_transport = destination.scheme == "https" or (
                 self.settings.mode == "development" and destination.hostname in ("127.0.0.1", "::1")
             )
-            if vid in self.settings.trace_target_versions and trace_transport:
-                scope = TraceWriteScope(
+            mode = (version.get("trace_capabilities") or {}).get("mode", "callback")
+            if (
+                mode == "callback"
+                and vid in self.settings.trace_target_versions
+                and trace_transport
+                and state["trace_id"]
+            ):
+                wire.trace_id = state["trace_id"]
+                scope = BoundTraceWriteScope(
+                    trace_id=state["trace_id"],
                     project_id=lease.project,
                     run_id=lease.run,
                     execution_id=lease.case,
@@ -270,6 +284,10 @@ class CaseRunner:
                 )
                 wire.trace_token = await AttemptTraceIssuer(resources).issue(scope, deadline)
             prediction = await adapter.execute(request)
+            if version.get("trace_capabilities"):
+                incoming = embedded.detach(prediction, slug, cfg.kind)
+                if mode == "embedded":
+                    outcome.embedded_trace = incoming
             outcome.prediction = UnifiedResponse.model_validate(
                 prediction.model_dump(), strict=True
             )
@@ -401,6 +419,13 @@ class CaseRunner:
                 if code
                 else "SUCCEEDED"
             )
+            if outcome.embedded_trace and outcome.prediction and state["trace_id"]:
+                try:
+                    async with db.begin_nested():
+                        await embedded.persist(db, state["trace_id"], *outcome.embedded_trace)
+                except Fault:
+                    # Rejected batch rolls back independently. The terminal trigger seals MISSING.
+                    pass
             # A judge may skip or reject input before the HTTP hook executes.
             await db.execute(
                 text("""UPDATE execution_attempts SET status='RUNNING',

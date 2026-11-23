@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
@@ -13,7 +14,17 @@ from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 
-from app.api import datasets, evaluations, evaluators, members, projects, run_progress
+from app.api import (
+    datasets,
+    evaluations,
+    evaluators,
+    evidence,
+    members,
+    projects,
+    reports,
+    run_progress,
+    traces,
+)
 from app.application.access.identity import (
     DevelopmentAuthProvider,
     DevelopmentSecretResolver,
@@ -21,6 +32,7 @@ from app.application.access.identity import (
     SecretResolver,
 )
 from app.application.catalog.store import Fault
+from app.application.trace.store import BatchFault
 from app.contracts.adapters import AdapterError
 from app.infrastructure.resources import Resources, Settings
 
@@ -68,6 +80,29 @@ def create_app(
     api.include_router(evaluations.router)
     api.include_router(run_progress.router)
 
+    api.include_router(traces.router)
+    api.include_router(evidence.router)
+    api.include_router(reports.router)
+
+    @api.exception_handler(BatchFault)
+    async def batch_fault(request: Request, exc: BatchFault) -> JSONResponse:
+        request.state.trace_counts = {"rejected": exc.count}
+        return JSONResponse(
+            {
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "retryable": False,
+                    "index": exc.index,
+                },
+                "accepted": 0,
+                "duplicate": 0,
+                "rejected": exc.count,
+                "request_id": request.state.request_id,
+            },
+            status_code=exc.status,
+        )
+
     @api.exception_handler(Fault)
     async def domain_fault(request: Request, exc: Fault) -> JSONResponse:
         return error(request, exc.status, exc.code, exc.message)
@@ -93,17 +128,24 @@ def create_app(
         except ValueError:
             request_id = str(uuid4())
         request.state.request_id = request_id
+        started = time.perf_counter()
         try:
             response = await call_next(request)
         except Exception:
             response = error(request, 500, "INTERNAL_ERROR", "服务内部错误")
         response.headers["X-Request-ID"] = request_id
-        # Only allow server-generated identifiers and status in access records.
-        logger.info(
-            json.dumps(
-                {"event": "http_request", "request_id": request_id, "status": response.status_code}
-            )
-        )
+        # Log route templates only. Actual paths, query strings and bodies can be private.
+        record: dict[str, object] = {
+            "event": "http_request",
+            "request_id": request_id,
+            "status": response.status_code,
+            "route": getattr(request.scope.get("route"), "path", None),
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+        }
+        counts = getattr(request.state, "trace_counts", {})
+        if response.status_code < 400 or "accepted" not in counts:
+            record.update(counts)
+        logger.info(json.dumps(record))
         return response
 
     @api.exception_handler(HTTPException)

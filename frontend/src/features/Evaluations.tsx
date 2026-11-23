@@ -177,6 +177,7 @@ function TaskPanel({
               token={token}
               call={call}
               write={write}
+              otherRuns={runs.map(r=>r.id)}
               onStatus={onStatus}
             />
           )}

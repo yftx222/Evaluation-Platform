@@ -5,14 +5,13 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from app.application.trace.scope import LIVE_SCOPE
 from app.contracts.adapters import TraceWriteIssuer, TraceWriteScope
+from app.contracts.traces import BoundTraceWriteScope
 from app.infrastructure.resources import Resources
 
-SCOPE = """a.id=:attempt_id AND a.execution_id=:execution_id AND a.run_id=:run_id
- AND a.epoch=:epoch AND c.id=a.execution_id AND r.id=c.run_id AND r.project_id=:project_id
- AND c.status='RUNNING' AND c.stage='ADAPTER' AND a.stage='ADAPTER'
- AND a.status IN ('CREATED','RUNNING') AND c.lease_epoch=a.epoch AND c.lease_owner=a.lease_owner
- AND c.lease_expires_at>clock_timestamp() AND r.status='RUNNING'"""
+SCOPE = f"""a.id=:attempt_id AND a.execution_id=:execution_id AND a.run_id=:run_id
+ AND a.epoch=:epoch AND r.project_id=:project_id AND {LIVE_SCOPE}"""
 
 
 class AttemptTraceIssuer(TraceWriteIssuer):
@@ -20,12 +19,13 @@ class AttemptTraceIssuer(TraceWriteIssuer):
         self.resources = resources
 
     async def issue(self, scope: TraceWriteScope, deadline: datetime) -> str:
+        bound = " AND a.trace_id=:trace_id" if isinstance(scope, BoundTraceWriteScope) else ""
         token = f"{scope.attempt_id}.{secrets.token_urlsafe(32)}"
         async with self.resources.transaction() as db:
             issued = await db.scalar(
                 text(f"""UPDATE execution_attempts a SET trace_verifier=:hash,
                 trace_expires_at=least(:deadline,clock_timestamp()+interval '5 minutes')
-                FROM case_executions c,evaluation_runs r WHERE {SCOPE}
+                FROM case_executions c,evaluation_runs r WHERE {SCOPE}{bound}
                 AND :deadline>clock_timestamp() RETURNING a.id"""),
                 {
                     **scope.model_dump(),
@@ -38,12 +38,13 @@ class AttemptTraceIssuer(TraceWriteIssuer):
         return token
 
     async def valid(self, scope: TraceWriteScope, token: str) -> bool:
+        bound = " AND a.trace_id=:trace_id" if isinstance(scope, BoundTraceWriteScope) else ""
         if len(token) > 128 or not token.startswith(str(scope.attempt_id) + "."):
             return False
         async with self.resources.transaction() as db:
             stored = await db.scalar(
                 text(f"""SELECT a.trace_verifier FROM execution_attempts a,
-                case_executions c,evaluation_runs r WHERE {SCOPE}
+                case_executions c,evaluation_runs r WHERE {SCOPE}{bound}
                 AND a.trace_expires_at>clock_timestamp()"""),
                 scope.model_dump(),
             )

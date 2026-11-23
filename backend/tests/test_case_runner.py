@@ -101,6 +101,8 @@ def test_batch_execution(catalog: tuple[Settings, dict[str, str]], protocol: str
                     "final_answer": query,
                     "choices": [{"message": {"content": query}}],
                 }
+                if protocol == "agent":
+                    response["events"] = [{"input": {"password": "private-telemetry"}}]
                 if protocol == "http" and query == "one" and attempts[key] == 1:
                     status = 429
             self.send_response(status)
@@ -283,6 +285,11 @@ def test_batch_execution(catalog: tuple[Settings, dict[str, str]], protocol: str
                     "denominator": denominator,
                     "value": numerator / denominator,
                 }
+            report = api.get(ROOT + f"/reports/runs/{run_id}").json()["data"]
+            assert report["summary"]["metrics"] == details["metrics"]
+            assert report["summary"]["score_counts"]["SKIPPED"] == 2
+            assert report["summary"]["total_tokens"] is None
+            assert any(v["members"] for v in report["summary"]["evaluators"])
             assert details["metrics"]["case_success_rate"]["value"] == 1
             assert details["metrics"]["score_coverage"]["numerator"] == 16
             assert details["metrics"]["score_coverage"]["denominator"] == 18
@@ -290,6 +297,7 @@ def test_batch_execution(catalog: tuple[Settings, dict[str, str]], protocol: str
             results = api.get(ROOT + f"/evaluations/runs/{run_id}/results").json()["data"]["items"]
             assert len(results) == 3
             for item in results:
+                assert "private-telemetry" not in json.dumps(item["prediction"])
                 hist = {a["id"]: a for a in item["attempts"]}
                 assert hist[item["prediction_attempt_id"]]["status"] == "SUCCEEDED"
                 assert len(item["scores"]) == 6
@@ -298,6 +306,21 @@ def test_batch_execution(catalog: tuple[Settings, dict[str, str]], protocol: str
                     == s["evaluator_version_id"]
                     for s in item["scores"]
                 )
+            groups = api.get(ROOT + f"/case-executions/{item['id']}/evidence").json()["data"][
+                "scores"
+            ]
+            versions = {g["evaluator_version_id"]: g for g in groups}
+            parent = versions[f["root"]["id"]]
+            assert not parent["items"] and len(parent["children"]) == 2
+            for child in parent["children"]:
+                original = versions[child["evaluator_version_id"]]
+                assert child["score_id"] == original["score_id"]
+                assert child["weight"] == child["position"] + 1
+                child_path = ROOT + f"/evaluations/scores/{child['score_id']}/evidence"
+                assert api.get(child_path).json()["data"] == original
+            for leaf in (rule, f["exact"], f["judge"]):
+                citation = versions[leaf["id"]]["items"][0]
+                assert citation["status"] == "AVAILABLE" and citation["excerpt"] == item["case_key"]
             assert len([c for c in calls if c[0] == "/judge"]) == 3
             assert len([c for c in calls if c[0] == "/target"]) == 3 + (protocol == "http")
             for path, key, data, bearer in calls:

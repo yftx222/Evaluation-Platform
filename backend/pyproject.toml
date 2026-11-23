@@ -38,7 +38,7 @@ select = ["E", "F", "I", "B", "UP"]
 plugins = ['pydantic.mypy']
 python_version = "3.12"
 strict = true
-files = ["app", "tests"]
+files = ["app", "tests", "trace_sdk"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

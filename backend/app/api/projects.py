@@ -159,7 +159,7 @@ async def permissions(request: Request, p: UUID, db: Db, who: User) -> dict[str,
 
 
 VERSION = """SELECT v.id,v.project_id,v.label,v.deployment_ref,v.digest,v.created_at,
-    a.kind,a.build,a.digest AS adapter_digest FROM project_versions v
+    v.trace_capabilities,a.kind,a.build,a.digest AS adapter_digest FROM project_versions v
     JOIN project_adapters a ON a.id=v.adapter_id WHERE v.project_id=:p"""
 
 
@@ -222,10 +222,12 @@ async def publish(request: Request, p: UUID, db: Db, who: User, body: Publish) -
         )
         v = await row(
             db,
-            """INSERT INTO project_versions(project_id,adapter_id,label,deployment_ref,digest)
-            VALUES (:p,:a,:label,:ref,:digest) RETURNING id""",
+            """INSERT INTO project_versions(project_id,adapter_id,label,deployment_ref,
+            digest,trace_capabilities)
+            VALUES (:p,:a,:label,:ref,:digest,CAST(:trace AS jsonb)) RETURNING id""",
             p=p,
             a=a["id"],
+            trace=body.trace_capabilities.model_dump_json(),
             label=body.label,
             ref=body.deployment_ref,
             digest=digest([body.model_dump(), fingerprint]),

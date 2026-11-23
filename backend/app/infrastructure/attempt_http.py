@@ -36,6 +36,7 @@ class Wire:
     key: str
     attempt: UUID | None = None
     trace_token: str | None = field(default=None, repr=False)
+    trace_id: UUID | None = None
     connect_failed: bool = False
     started: bool = False
     status: int | None = None
@@ -49,6 +50,8 @@ class Wire:
         request.headers["Idempotency-Key"] = self.key
         if self.trace_token:
             request.headers["X-Trace-Write"] = self.trace_token
+            if self.trace_id:
+                request.headers["X-Trace-Id"] = str(self.trace_id)
 
     async def response(self, response: httpx.Response) -> None:
         self.status = response.status_code

@@ -4,6 +4,7 @@ from pydantic import AwareDatetime, Field, StringConstraints, model_validator
 
 from app.contracts.adapters import Contract
 from app.contracts.http import AdapterConfig
+from app.contracts.traces import TraceCapabilities
 
 type Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
 type Kind = Literal["agent", "rag", "dataagent", "llm", "custom"]
@@ -59,3 +60,18 @@ class Publish(Contract):
     label: Name
     deployment_ref: Name
     adapter: AdapterConfig
+    trace_capabilities: TraceCapabilities = Field(default_factory=TraceCapabilities)
+
+    @model_validator(mode="after")
+    def protocol_defaults(self) -> Self:
+        if (
+            "trace_capabilities" not in self.model_fields_set
+            and self.adapter.kind == "openai_compatible"
+        ):
+            self.trace_capabilities = TraceCapabilities(
+                event_types=["MODEL_CALL", "FINAL_OUTPUT", "CUSTOM"],
+                parent_links=False,
+                retrieval_refs=False,
+                tool_details=False,
+            )
+        return self
