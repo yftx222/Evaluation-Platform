@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.application.access.identity import DevelopmentIdentity
 from app.application.catalog.store import Fault, row
+from app.contracts.evaluators import JudgeAccount
 from app.contracts.http import TargetRule
 
 
@@ -22,6 +23,7 @@ class Settings(BaseSettings):
     identities: list[DevelopmentIdentity] = Field(default_factory=list)
     targets: dict[str, list[TargetRule]] = Field(default_factory=dict)
     secrets: dict[str, dict[str, dict[str, SecretStr]]] = Field(default_factory=dict)
+    judge_accounts: dict[str, JudgeAccount] = Field(default_factory=dict)
     pool_size: int = Field(5, ge=1, le=100)
 
 
@@ -82,6 +84,50 @@ class Resources:
                 text("""UPDATE projects SET next_call_at=now()+
                 make_interval(secs=>60.0/rpm) WHERE id=:p"""),
                 {"p": project},
+            )
+        try:
+            yield
+        finally:
+            async with self.transaction() as db:
+                await db.execute(text("DELETE FROM call_leases WHERE id=:id"), {"id": lease["id"]})
+
+    @asynccontextmanager
+    async def judge_permit(
+        self, account_id: str, account: JudgeAccount, timeout: float
+    ) -> AsyncIterator[None]:
+        quota = "judge:" + account_id
+        window = "judge-rpm:" + account_id
+        async with self.transaction() as db:
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:q,0))"), {"q": quota}
+            )
+            await db.execute(
+                text("DELETE FROM call_leases WHERE quota_key IN (:q,:w) AND expires_at<=now()"),
+                {"q": quota, "w": window},
+            )
+            counts = await row(
+                db,
+                """SELECT count(*) FILTER(WHERE quota_key=:q) AS active,
+                count(*) FILTER(WHERE quota_key=:w) AS recent FROM call_leases
+                WHERE quota_key IN (:q,:w)""",
+                q=quota,
+                w=window,
+            )
+            if counts["active"] >= account.max_parallel or counts["recent"] >= account.rpm:
+                raise Fault(429, "JUDGE_LIMIT", "裁判账户试评额度已用完")
+            lease = await row(
+                db,
+                """INSERT INTO call_leases(quota_key,expires_at)
+                VALUES (:q,now()+make_interval(secs=>:ttl)) RETURNING id""",
+                q=quota,
+                ttl=timeout + 2,
+            )
+            await db.execute(
+                text(
+                    "INSERT INTO call_leases(quota_key,expires_at) "
+                    "VALUES (:w,now()+interval '60 seconds')"
+                ),
+                {"w": window},
             )
         try:
             yield

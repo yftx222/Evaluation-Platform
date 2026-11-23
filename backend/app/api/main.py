@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 
-from app.api import members, projects
+from app.api import datasets, evaluators, members, projects
 from app.application.access.identity import (
     DevelopmentAuthProvider,
     DevelopmentSecretResolver,
@@ -63,6 +63,8 @@ def create_app(
 
     api.include_router(projects.router)
     api.include_router(members.router)
+    api.include_router(datasets.router)
+    api.include_router(evaluators.router)
 
     @api.exception_handler(Fault)
     async def domain_fault(request: Request, exc: Fault) -> JSONResponse:
@@ -108,6 +110,18 @@ def create_app(
 
     @api.exception_handler(RequestValidationError)
     async def handle_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        if request.url.path.startswith("/api/v1/evaluators"):
+            first = exc.errors()[0]
+            field = ".".join(str(part) for part in first["loc"] if part != "body")
+            description = {
+                "missing": "此项必填",
+                "dict_type": "需要 JSON 对象",
+                "list_type": "需要数组",
+                "string_type": "需要文本",
+                "extra_forbidden": "包含未支持的字段",
+                "string_pattern_mismatch": "格式错误，请检查标识或版本号",
+            }.get(first["type"], "请检查此字段的类型、长度或取值")
+            return error(request, 422, "INVALID_INPUT", f"{field or '请求体'}：{description}")
         return error(request, 422, "INVALID_INPUT", "请求字段不符合要求")
 
     @api.get("/health")

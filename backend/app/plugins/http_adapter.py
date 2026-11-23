@@ -4,8 +4,9 @@ import json
 import re
 import socket
 import time
-from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -16,18 +17,19 @@ from app.contracts.adapters import (
     AdapterError,
     BaseAdapter,
     ConnectionResult,
+    Contract,
     UnifiedRequest,
     UnifiedResponse,
 )
 from app.contracts.http import AdapterConfig, TargetRule
-
-
-def field(value: object, path: str) -> object:
-    for key in path.split("."):
-        if not isinstance(value, dict) or key not in value:
-            raise KeyError(key)
-        value = value[key]
-    return value
+from app.plugins.adapter_protocols import (
+    AgentMapping,
+    AgentOptions,
+    ChatMapping,
+    ChatOptions,
+    HTTPOptions,
+    Mapping,
+)
 
 
 class DestinationPolicy:
@@ -106,14 +108,31 @@ class HTTPAdapter(BaseAdapter):
         policy: DestinationPolicy,
         resolver: SecretResolver,
         project: str,
+        mapping: Mapping | None = None,
+        capabilities: tuple[str, ...] = ("execute",),
     ) -> None:
+        self.mapping = mapping or Mapping(config, project)
+        self.capabilities = capabilities
         self.config, self.policy = config, policy
         self.resolver, self.project = resolver, project
 
     async def _call(
-        self, endpoint: str, method: str, body: dict[str, object], key: str | None = None
-    ) -> bytes:
-        pinned, hostname, authority = await self.policy.approve(endpoint)
+        self,
+        endpoint: str,
+        method: str,
+        body: dict[str, object],
+        key: str | None = None,
+        *,
+        budget: float,
+    ) -> tuple[bytes, str | None]:
+        end = time.monotonic() + budget
+        try:
+            async with asyncio.timeout(budget):
+                pinned, hostname, authority = await self.policy.approve(
+                    self.config.address(endpoint)
+                )
+        except TimeoutError as exc:
+            raise AdapterError("TARGET_TIMEOUT", "not_sent", True) from exc
         headers: dict[str, str] = {k: v for k, v in self.config.headers.items()}
         headers["Host"] = authority
         if self.config.secret_ref and self.config.secret_version:
@@ -123,25 +142,41 @@ class HTTPAdapter(BaseAdapter):
             if not value:
                 raise AdapterError("SECRET_VERSION_UNAVAILABLE", "not_sent")
             headers["Authorization"] = "Bearer " + value.get_secret_value()
+        if key is not None and (not key.isascii() or not key.isprintable() or not key.strip()):
+            raise AdapterError("INVALID_REQUEST", "not_sent")
         if key:
             headers["Idempotency-Key"] = key
         params = {k: str(v) for k, v in body.items()} if method == "GET" else None
+        content = None
+        if method == "POST":
+            try:
+                content = json.dumps(
+                    body, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+                ).encode()
+            except (TypeError, ValueError, RecursionError) as exc:
+                raise AdapterError("INVALID_REQUEST", "not_sent") from exc
+            headers["Content-Type"] = "application/json"
         try:
-            async with httpx.AsyncClient(
-                trust_env=False, follow_redirects=False, timeout=self.config.timeout_s
-            ) as client:
+            async with (
+                asyncio.timeout(end - time.monotonic()),
+                httpx.AsyncClient(
+                    trust_env=False, follow_redirects=False, timeout=self.config.timeout_s
+                ) as client,
+            ):
                 async with client.stream(
                     method,
                     pinned,
                     headers=headers,
                     params=params,
-                    json=body if method == "POST" else None,
+                    content=content,
                     extensions={"sni_hostname": hostname},
                 ) as response:
                     if 300 <= response.status_code < 400:
                         raise AdapterError("REDIRECT_DENIED", "sent")
                     if response.status_code in (401, 403):
                         raise AdapterError("TARGET_AUTH_FAILED", "sent")
+                    if response.status_code == 429:
+                        raise AdapterError("TARGET_RATE_LIMIT", "sent", True)
                     if response.is_error:
                         raise AdapterError("TARGET_HTTP_ERROR", "sent", response.status_code >= 500)
                     data = bytearray()
@@ -149,8 +184,10 @@ class HTTPAdapter(BaseAdapter):
                         data.extend(chunk)
                         if len(data) > 1048576:
                             raise AdapterError("RESPONSE_TOO_LARGE", "sent")
-                    return bytes(data)
-        except httpx.TimeoutException as exc:
+                    return bytes(data), response.headers.get("x-request-id")
+        except httpx.ConnectTimeout as exc:
+            raise AdapterError("TARGET_TIMEOUT", "not_sent", True) from exc
+        except (httpx.TimeoutException, TimeoutError) as exc:
             raise AdapterError("TARGET_TIMEOUT", "unknown", True) from exc
         except httpx.ConnectError as exc:
             raise AdapterError("NETWORK_ERROR", "not_sent", True) from exc
@@ -159,77 +196,83 @@ class HTTPAdapter(BaseAdapter):
 
     async def validate_connection(self) -> ConnectionResult:
         start = time.monotonic()
-        try:
-            async with asyncio.timeout(self.config.timeout_s):
-                await self._call(self.config.probe_endpoint, "GET", {})
-        except TimeoutError as exc:
-            raise AdapterError("TARGET_TIMEOUT", "unknown", True) from exc
+        await self._call(self.config.probe_endpoint, "GET", {}, budget=self.config.timeout_s)
         return ConnectionResult(
             ok=True,
             latency_ms=int((time.monotonic() - start) * 1000),
             code="OK",
             message="连接成功",
-            capabilities=["execute"],
+            capabilities=list(self.capabilities),
         )
 
     async def execute(self, request: UnifiedRequest) -> UnifiedResponse:
         try:
-            body = {
-                target: field(request.model_dump(mode="json"), path)
-                for target, path in self.config.request_map.items()
-            }
-        except KeyError as exc:
+            body = self.mapping.request_body(request)
+        except (ValueError, KeyError, TypeError) as exc:
             raise AdapterError("INVALID_REQUEST", "not_sent") from exc
         budget = (request.deadline_at - datetime.now(UTC)).total_seconds()
         if budget <= 0:
             raise AdapterError("TARGET_TIMEOUT", "not_sent")
         start = time.monotonic()
         try:
-            async with asyncio.timeout(min(budget, self.config.timeout_s)):
-                data = await self._call(
-                    self.config.endpoint, self.config.method, body, request.idempotency_key
-                )
+            data, request_id = await self._call(
+                self.config.endpoint,
+                self.config.method,
+                body,
+                request.idempotency_key,
+                budget=min(budget, self.config.timeout_s),
+            )
             result = self.normalize_response(json.loads(data))
-        except TimeoutError as exc:
-            raise AdapterError("TARGET_TIMEOUT", "unknown", True) from exc
-        except (ValueError, UnicodeError) as exc:
+            if request_id:
+                result.observed["request_id"] = request_id
+        except (ValueError, RecursionError) as exc:
             raise AdapterError("INVALID_RESPONSE", "sent") from exc
         result.latency_ms = int((time.monotonic() - start) * 1000)
         return result
 
     def normalize_response(self, raw: object) -> UnifiedResponse:
         try:
-            return UnifiedResponse.model_validate(
-                {
-                    "answer": field(raw, self.config.answer_path)
-                    if self.config.answer_path
-                    else None,
-                    "structured_output": field(raw, self.config.structured_path)
-                    if self.config.structured_path
-                    else None,
-                }
-            )
-        except (ValidationError, KeyError) as exc:
+            return self.mapping.normalize(raw)
+        except (ValueError, KeyError, TypeError, IndexError, RecursionError) as exc:
             raise AdapterError("INVALID_RESPONSE", "sent") from exc
 
     async def collect_trace(self, context: dict[str, object]) -> list[dict[str, object]]:
-        events = context.get("events", [])
-        if not isinstance(events, list) or not all(isinstance(e, dict) for e in events):
-            raise AdapterError("INVALID_TRACE", "sent")
-        return events
+        try:
+            return self.mapping.trace(context)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise AdapterError("INVALID_TRACE", "sent") from exc
 
 
-type Factory = Callable[[AdapterConfig, DestinationPolicy, SecretResolver, str], BaseAdapter]
+@dataclass(frozen=True)
+class Implementation:
+    factory: type[Mapping]
+    options: type[Contract]
+    requirements: tuple[str, ...]
+    capabilities: tuple[str, ...]
+    example: dict[str, Any]
 
 
 class AdapterRegistry:
     def __init__(self) -> None:
-        self.factories: dict[tuple[str, str], Factory] = {}
+        self.plugins: dict[tuple[str, str], Implementation] = {}
 
-    def register(self, kind: str, build: str, factory: Factory) -> None:
-        if (kind, build) in self.factories:
+    def register(self, kind: str, build: str, plugin: Implementation) -> None:
+        if (kind, build) in self.plugins:
             raise ValueError("重复的 Adapter 注册")
-        self.factories[kind, build] = factory
+        self.plugins[kind, build] = plugin
+
+    def describe(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "kind": k,
+                "build": b,
+                "config_schema": p.options.model_json_schema(),
+                "input_requirements": p.requirements,
+                "capabilities": p.capabilities,
+                "example": p.example,
+            }
+            for (k, b), p in self.plugins.items()
+        ]
 
     def create(
         self,
@@ -238,11 +281,44 @@ class AdapterRegistry:
         resolver: SecretResolver,
         project: str,
     ) -> BaseAdapter:
-        factory = self.factories.get((config.kind, config.build))
-        if factory is None:
+        plugin = self.plugins.get((config.kind, config.build))
+        if plugin is None:
             raise AdapterError("VERSION_UNAVAILABLE", "not_sent")
-        return factory(config, policy, resolver, project)
+        try:
+            plugin.options.model_validate(config.options)
+        except ValidationError as exc:
+            raise AdapterError("INVALID_ADAPTER_CONFIG", "not_sent") from exc
+        if config.kind != "http" and (
+            config.method != "POST"
+            or config.request_map != {"query": "input.query"}
+            or config.answer_path != "answer"
+            or config.structured_path is not None
+        ):
+            raise AdapterError("INVALID_ADAPTER_CONFIG", "not_sent")
+        return HTTPAdapter(
+            config, policy, resolver, project, plugin.factory(config, project), plugin.capabilities
+        )
 
 
 registry = AdapterRegistry()
-registry.register("http", "1", HTTPAdapter)
+registry.register(
+    "http", "1", Implementation(Mapping, HTTPOptions, ("request_map",), ("execute",), {})
+)
+registry.register(
+    "openai_compatible",
+    "1",
+    Implementation(
+        ChatMapping,
+        ChatOptions,
+        ("query | messages",),
+        ("execute", "chat_completions"),
+        {"model": "your-model-id"},
+    ),
+)
+registry.register(
+    "agent",
+    "1",
+    Implementation(
+        AgentMapping, AgentOptions, ("query | messages",), ("execute", "embedded_events"), {}
+    ),
+)

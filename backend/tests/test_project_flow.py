@@ -323,6 +323,13 @@ def test_browser_project_release(environment: tuple[Settings, str, str, str]) ->
                 page.get_by_role("button", name="发布版本").click()
                 page.get_by_role("button", name="测试连接").click()
                 expect(page.get_by_role("status").filter(has_text="连接成功")).to_be_visible()
+                page.get_by_label("接入协议与构建").select_option("openai_compatible:1")
+                page.get_by_label("版本标签").fill("v2")
+                page.get_by_label("模型标识").fill("local-chat")
+                page.get_by_role("button", name="发布版本").click()
+                expect(
+                    page.locator(".row").filter(has_text="openai_compatible / 1")
+                ).to_be_visible()
                 browser.close()
         finally:
             server.should_exit = True

@@ -8,6 +8,8 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts.http import AdapterConfig
+
 
 class Fault(Exception):
     def __init__(self, status: int, code: str, message: str) -> None:
@@ -71,7 +73,7 @@ async def page(
 
 async def audit(
     db: AsyncSession,
-    project: UUID,
+    project: UUID | None,
     actor: str,
     request_id: str,
     action: str,
@@ -92,4 +94,20 @@ async def audit(
             request=request_id,
             changes=json.dumps({"fields": fields}),
         ),
+    )
+
+
+async def version_adapter_config(db: AsyncSession, project: UUID, version: UUID) -> AdapterConfig:
+    stored = await row(
+        db,
+        """SELECT a.* FROM project_versions v JOIN project_adapters a
+         ON v.adapter_id=a.id WHERE v.id=:v AND v.project_id=:p""",
+        v=version,
+        p=project,
+    )
+    return AdapterConfig.model_validate(
+        {
+            **stored["config"],
+            **{k: stored[k] for k in ("kind", "build", "secret_ref", "secret_version")},
+        }
     )

@@ -8,7 +8,7 @@ from sqlalchemy import text
 
 from app.api.access import Actor, Db, User, authorize
 from app.application.access.identity import Principal
-from app.application.catalog.store import Fault, audit, digest, page, row
+from app.application.catalog.store import Fault, audit, digest, page, row, version_adapter_config
 from app.contracts.adapters import AdapterError, Contract
 from app.contracts.catalog import Kind, ProjectCreate, ProjectPatch, Publish
 from app.contracts.http import AdapterConfig
@@ -64,6 +64,11 @@ async def record(
 @router.get("/auth/me")
 async def me(request: Request, who: User) -> dict[str, object]:
     return reply(request, who)
+
+
+@router.get("/adapters/implementations")
+async def implementations(request: Request, who: User) -> dict[str, object]:
+    return reply(request, registry.describe())
 
 
 @router.get("/projects")
@@ -190,8 +195,8 @@ async def publish(request: Request, p: UUID, db: Db, who: User, body: Publish) -
     cfg = body.adapter
     registry.create(cfg, policy, request.app.state.secrets, project["slug"])
     async with asyncio.timeout(cfg.timeout_s):
-        await policy.approve(cfg.endpoint)
-        await policy.approve(cfg.probe_endpoint)
+        await policy.approve(cfg.address(cfg.endpoint))
+        await policy.approve(cfg.address(cfg.probe_endpoint))
     async with db.begin():
         await authorize(db, who, p, "A", lock=True)
         data = cfg.model_dump(exclude={"kind", "build", "secret_ref", "secret_version"})
@@ -247,19 +252,8 @@ async def probe(request: Request, p: UUID, db: Db, who: User, body: Probe) -> di
         raise Fault(422, "INVALID_INPUT", "请选择一个版本或候选配置")
     cfg = body.adapter
     if cfg is None:
-        stored = await row(
-            db,
-            """SELECT a.* FROM project_versions v JOIN project_adapters a
-             ON v.adapter_id=a.id WHERE v.id=:v AND v.project_id=:p""",
-            v=body.version_id,
-            p=p,
-        )
-        cfg = AdapterConfig.model_validate(
-            {
-                **stored["config"],
-                **{k: stored[k] for k in ("kind", "build", "secret_ref", "secret_version")},
-            }
-        )
+        assert body.version_id is not None
+        cfg = await version_adapter_config(db, p, body.version_id)
     slug = project["slug"]
     adapter = registry.create(cfg, policy_for(request, slug), request.app.state.secrets, slug)
     await db.commit()

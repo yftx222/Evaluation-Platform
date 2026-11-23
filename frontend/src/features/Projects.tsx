@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import Datasets from "./Datasets";
+import Evaluators from "./Evaluators";
 import type { FormEvent, ReactNode } from "react";
 import { Button } from "antd";
 
@@ -16,6 +18,7 @@ type Row = {
   role?: string;
   label?: string;
   deployment_ref?: string;
+  build?: string;
   prefix?: string;
   revoked_at?: string;
   expires_at?: string;
@@ -35,6 +38,12 @@ function client(token: string): Call {
     });
     if (res.status === 204) return undefined as T;
     const payload = await res.json();
+    if (
+      res.status === 504 &&
+      url.endsWith("/test") &&
+      payload.data?.status === "ERROR"
+    )
+      return payload.data as T;
     if (!res.ok)
       throw new Error(
         payload.error?.message +
@@ -167,6 +176,26 @@ function roles(initial = "R") {
     </label>
   );
 }
+type AdapterPlugin = {
+  kind: string;
+  build: string;
+  example: Record<string, unknown>;
+  config_schema: object;
+};
+function jsonObject(
+  data: FormData,
+  key: string,
+  label: string,
+): Record<string, unknown> {
+  try {
+    const obj = JSON.parse(val(data, key));
+    if (obj && typeof obj === "object" && !Array.isArray(obj)) return obj;
+  } catch {
+    /* report which field needs attention */
+  }
+  throw new Error(label + "需要 JSON 对象，例如 {}");
+}
+
 function Details({
   id,
   call,
@@ -181,10 +210,13 @@ function Details({
     [versions, setVersions] = useState<Row[]>([]),
     [members, setMembers] = useState<Row[]>([]),
     [keys, setKeys] = useState<Row[]>([]),
+    [plugins, setPlugins] = useState<AdapterPlugin[]>([]),
+    [pluginKey, setPluginKey] = useState("http:1"),
     [admin, setAdmin] = useState(false),
     [secret, setSecret] = useState(""),
     [message, setMessage] = useState(""),
     [tab, setTab] = useState("配置");
+  const plugin = plugins.find((p) => p.kind + ":" + p.build === pluginKey);
   async function load() {
     const [p, perm, v] = await Promise.all([
       call<Row>(path),
@@ -195,12 +227,14 @@ function Details({
     setVersions(v);
     setAdmin(perm.role === "A");
     if (perm.role === "A") {
-      const [m, k] = await Promise.all([
+      const [m, k, implementations] = await Promise.all([
         all(call, path + "/members"),
         all(call, path + "/api-keys"),
+        call<AdapterPlugin[]>("/adapters/implementations"),
       ]);
       setMembers(m);
       setKeys(k);
+      setPlugins(implementations);
     }
   }
   useEffect(() => {
@@ -273,24 +307,35 @@ function Details({
         <>
           {admin && (
             <Editor
-              title="发布 HTTP Adapter 版本"
+              title="发布接入版本"
               save="发布版本"
               submit={async (d) => {
                 const ref = val(d, "secret_ref"),
                   ver = val(d, "secret_version");
+                if (!plugin) throw new Error("请选择已部署的接入协议");
+                if (Boolean(ref) !== Boolean(ver))
+                  throw new Error("密钥引用和密钥版本需要一起填写");
+                const options = jsonObject(d, "options", "协议选项");
+                if (plugin.kind === "openai_compatible")
+                  options.model = val(d, "model");
                 await call(path + "/versions", "POST", {
                   label: val(d, "label"),
                   deployment_ref: val(d, "deployment_ref"),
                   adapter: {
-                    kind: "http",
-                    build: "1",
+                    kind: plugin.kind,
+                    build: plugin.build,
+                    options,
                     endpoint: val(d, "endpoint"),
                     probe_endpoint: val(d, "probe_endpoint"),
-                    method: val(d, "method"),
-                    request_map: JSON.parse(val(d, "mapping")),
-                    answer_path: val(d, "answer_path") || null,
-                    structured_path: val(d, "structured_path") || null,
-                    headers: JSON.parse(val(d, "headers")),
+                    ...(plugin.kind === "http"
+                      ? {
+                          method: val(d, "method"),
+                          request_map: jsonObject(d, "mapping", "请求映射"),
+                          answer_path: val(d, "answer_path") || null,
+                          structured_path: val(d, "structured_path") || null,
+                        }
+                      : {}),
+                    headers: jsonObject(d, "headers", "请求头"),
                     secret_ref: ref || null,
                     secret_version: ver || null,
                   },
@@ -298,29 +343,87 @@ function Details({
                 await load();
               }}
             >
+              <label>
+                接入协议与构建
+                <select
+                  value={pluginKey}
+                  onChange={(e) => setPluginKey(e.target.value)}
+                >
+                  {plugins.map((p) => (
+                    <option
+                      key={p.kind + ":" + p.build}
+                      value={p.kind + ":" + p.build}
+                    >
+                      {p.kind} · {p.build}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <Input name="label" label="版本标签" />
               <Input name="deployment_ref" label="部署标识" />
               <Input name="endpoint" label="业务地址" type="url" />
               <Input name="probe_endpoint" label="只读探测地址" type="url" />
-              <label>
-                方法
-                <select name="method">
-                  <option>POST</option>
-                  <option>GET</option>
-                </select>
-              </label>
-              <Input
-                name="mapping"
-                label="请求映射 JSON"
-                initial={'{"query":"input.query"}'}
-              />
-              <Input
-                name="answer_path"
-                label="答案字段"
-                initial="answer"
-                optional
-              />
-              <Input name="structured_path" label="结构化字段" optional />
+              {plugin?.kind === "http" && (
+                <>
+                  <label>
+                    方法
+                    <select name="method">
+                      <option>POST</option>
+                      <option>GET</option>
+                    </select>
+                  </label>
+                  <Input
+                    name="mapping"
+                    label="请求映射 JSON"
+                    initial={'{"query":"input.query"}'}
+                  />
+                  <Input
+                    name="answer_path"
+                    label="答案字段"
+                    initial="answer"
+                    optional
+                  />
+                  <Input name="structured_path" label="结构化字段" optional />
+                </>
+              )}
+              {plugin?.kind === "openai_compatible" && (
+                <label>
+                  模型标识
+                  <input
+                    required
+                    name="model"
+                    placeholder="填写目标服务提供的模型名"
+                  />
+                </label>
+              )}
+              {plugin && (
+                <label key={pluginKey}>
+                  协议选项（JSON 对象）
+                  <textarea
+                    name="options"
+                    required
+                    defaultValue={JSON.stringify(
+                      Object.fromEntries(
+                        Object.entries(plugin.example).filter(
+                          ([key]) =>
+                            plugin.kind !== "openai_compatible" ||
+                            key !== "model",
+                        ),
+                      ),
+                    )}
+                  />
+                  <small>
+                    默认填写 <code>{"{}"}</code>{" "}
+                    即可使用标准字段。自定义字段见下方说明。
+                  </small>
+                </label>
+              )}
+              {plugin && (
+                <details>
+                  <summary>协议字段说明</summary>
+                  <pre>{JSON.stringify(plugin.config_schema, null, 2)}</pre>
+                </details>
+              )}
               <Input name="headers" label="请求头 JSON" initial="{}" />
               <Input name="secret_ref" label="密钥引用" optional />
               <Input name="secret_version" label="密钥版本" optional />
@@ -330,7 +433,7 @@ function Details({
           {versions.map((v) => (
             <div className="row" key={v.id}>
               <span>
-                {v.label} · {v.deployment_ref}
+                {v.label} · {v.deployment_ref} · {v.kind} / {v.build}
               </span>
               {admin && (
                 <Button
@@ -490,6 +593,8 @@ function Details({
 export default function Projects() {
   const [token, setToken] = useState(""),
     [org, setOrg] = useState(false),
+    [catalog, setCatalog] = useState("projects"),
+    [canEdit, setCanEdit] = useState(false),
     [projects, setProjects] = useState<Row[]>([]),
     [selected, setSelected] = useState(""),
     [error, setError] = useState("");
@@ -504,6 +609,13 @@ export default function Projects() {
     <main>
       <header>
         <h1>AI 评测中台</h1>
+        {token && (
+          <nav>
+            <Button onClick={() => setCatalog("projects")}>项目管理</Button>
+            <Button onClick={() => setCatalog("datasets")}>数据集管理</Button>
+            <Button onClick={() => setCatalog("evaluators")}>评分器管理</Button>
+          </nav>
+        )}
         {token && (
           <Button
             onClick={() => {
@@ -524,11 +636,17 @@ export default function Projects() {
             const t = val(d, "token");
             const u = await client(t)<{ org_roles: string[] }>("/auth/me");
             setOrg(u.org_roles.includes("Org"));
+            setCanEdit(u.org_roles.includes("Cat"));
+            setCatalog("projects");
             setToken(t);
           }}
         >
           <Input name="token" label="组织访问令牌" type="password" />
         </Editor>
+      ) : catalog === "evaluators" ? (
+        <Evaluators call={call} canEdit={canEdit} />
+      ) : catalog === "datasets" ? (
+        <Datasets token={token} canEdit={canEdit} />
       ) : (
         <div className="layout">
           <aside>

@@ -9,7 +9,7 @@ from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.access.identity import IdentityProvider, Principal
-from app.application.catalog.store import Fault, row
+from app.application.catalog.store import Fault, audit, row
 from app.infrastructure.resources import Resources
 
 
@@ -94,3 +94,20 @@ async def authorize(
     if "RWA".index(role) < "RWA".index(level):
         raise Fault(403, "FORBIDDEN", "项目权限不足")
     return role
+
+
+def maintainer(who: User) -> Principal:
+    if "Cat" not in who.org_roles:
+        raise Fault(403, "FORBIDDEN", "需要共享目录维护权限 Cat")
+    return who
+
+
+Cat = Annotated[Principal, Depends(maintainer)]
+
+
+async def record(
+    db: Db, req: Request, who: Principal, action: str, kind: str, id_: UUID, fields: list[str]
+) -> None:
+    await audit(
+        db, None, f"{who.issuer}/{who.subject}", req.state.request_id, action, kind, id_, fields
+    )

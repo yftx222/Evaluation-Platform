@@ -103,3 +103,31 @@ code {
     padding: 12px;
   }
 }
+
+.create-dataset {
+  align-self: start;
+}
+.dataset-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.dataset-field textarea {
+  padding: 7px;
+  font: inherit;
+  border: 1px solid #aebec9;
+  border-radius: 4px;
+  resize: vertical;
+}
+.dataset-field small {
+  color: #465d70;
+}
+.dataset-field [aria-invalid="true"] {
+  border-color: #ae2828;
+}
+.create-dataset [role="alert"] {
+  color: #9b1c1c;
+}
+
+.layout > div { min-width: 0; }
+.layout pre { white-space: pre-wrap; overflow-wrap: anywhere; }
