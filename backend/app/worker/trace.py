@@ -1,0 +1,62 @@
+import hashlib
+import secrets
+from datetime import datetime
+from uuid import UUID
+
+from sqlalchemy import text
+
+from app.contracts.adapters import TraceWriteIssuer, TraceWriteScope
+from app.infrastructure.resources import Resources
+
+SCOPE = """a.id=:attempt_id AND a.execution_id=:execution_id AND a.run_id=:run_id
+ AND a.epoch=:epoch AND c.id=a.execution_id AND r.id=c.run_id AND r.project_id=:project_id
+ AND c.status='RUNNING' AND c.stage='ADAPTER' AND a.stage='ADAPTER'
+ AND a.status IN ('CREATED','RUNNING') AND c.lease_epoch=a.epoch AND c.lease_owner=a.lease_owner
+ AND c.lease_expires_at>clock_timestamp() AND r.status='RUNNING'"""
+
+
+class AttemptTraceIssuer(TraceWriteIssuer):
+    def __init__(self, resources: Resources) -> None:
+        self.resources = resources
+
+    async def issue(self, scope: TraceWriteScope, deadline: datetime) -> str:
+        token = f"{scope.attempt_id}.{secrets.token_urlsafe(32)}"
+        async with self.resources.transaction() as db:
+            issued = await db.scalar(
+                text(f"""UPDATE execution_attempts a SET trace_verifier=:hash,
+                trace_expires_at=least(:deadline,clock_timestamp()+interval '5 minutes')
+                FROM case_executions c,evaluation_runs r WHERE {SCOPE}
+                AND :deadline>clock_timestamp() RETURNING a.id"""),
+                {
+                    **scope.model_dump(),
+                    "hash": hashlib.sha256(token.encode()).hexdigest(),
+                    "deadline": deadline,
+                },
+            )
+            if issued is None:
+                raise ValueError("trace scope expired")
+        return token
+
+    async def valid(self, scope: TraceWriteScope, token: str) -> bool:
+        if len(token) > 128 or not token.startswith(str(scope.attempt_id) + "."):
+            return False
+        async with self.resources.transaction() as db:
+            stored = await db.scalar(
+                text(f"""SELECT a.trace_verifier FROM execution_attempts a,
+                case_executions c,evaluation_runs r WHERE {SCOPE}
+                AND a.trace_expires_at>clock_timestamp()"""),
+                scope.model_dump(),
+            )
+        return bool(
+            stored and secrets.compare_digest(stored, hashlib.sha256(token.encode()).hexdigest())
+        )
+
+    async def revoke(self, attempt_id: UUID, epoch: int) -> None:
+        async with self.resources.transaction() as db:
+            await db.execute(
+                text("""UPDATE execution_attempts a SET trace_verifier=NULL,
+                trace_expires_at=NULL FROM case_executions c WHERE a.id=:a AND a.epoch=:epoch
+                AND a.trace_verifier IS NOT NULL AND c.id=a.execution_id AND c.lease_epoch=a.epoch
+                AND c.lease_expires_at>clock_timestamp()"""),
+                {"a": attempt_id, "epoch": epoch},
+            )

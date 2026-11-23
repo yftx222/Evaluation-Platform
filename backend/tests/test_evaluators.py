@@ -172,6 +172,7 @@ def test_trial_plugin_boundary(
     asyncio.run(exercise())
 
 
+@pytest.mark.parametrize("catalog", ["0004_evaluators", "head"], indirect=True)
 def test_scoring_integration(
     catalog: tuple[Settings, dict[str, str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -475,9 +476,21 @@ def test_scoring_integration(
                             and "Ignore previous" not in changes
                             and "sample-only" not in changes
                         )
-                        assert not await conn.scalar(
-                            text("SELECT to_regclass('evaluation_scores')")
+                        revision = await conn.scalar(
+                            text("SELECT version_num FROM alembic_version")
                         )
+                        if revision == "0004_evaluators":
+                            assert not await conn.scalar(
+                                text("SELECT to_regclass('evaluation_scores')")
+                            )
+                        else:
+                            assert (
+                                await conn.scalar(text("SELECT count(*) FROM evaluation_scores"))
+                                == 0
+                            )
+                            assert (
+                                await conn.scalar(text("SELECT count(*) FROM evaluation_runs")) == 0
+                            )
                 finally:
                     await engine.dispose()
 

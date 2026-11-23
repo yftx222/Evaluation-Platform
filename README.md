@@ -106,3 +106,33 @@ input 和 expected 都是对象；附件使用 HTTPS 引用或 asset:标识，�
 业务调用每次向受限目的地发送一个请求，透传 Idempotency-Key。429 映射为 TARGET_RATE_LIMIT、5xx 为可重试 TARGET_HTTP_ERROR，均不在 Adapter 内重试。真实项目是否按该键去重，仍应由项目方联调验证。普通模型响应可以不含 Trace；Agent 的正式 TraceWrite 回调归入 Phase 4。
 
 Chat Completions 字段参考 [OpenAI API Reference](https://developers.openai.com/api/reference/resources/chat)。各兼容服务实际支持的模型参数以其部署契约为准。
+
+## Phase 3.1 评测方案与运行记录
+
+在 API 的 `/docs` 中打开 evaluations 分组。先准备项目的一个固定部署版本、已发布的数据集版本和一个或多个已发布的顶层评分器版本。以项目 W/A 的组织令牌调用 `POST /api/v1/evaluations/tasks`，提交 name、project_version_id、dataset_version_id 和 evaluator_version_ids 数组。可用 policy 调整本方案的并发、超时和尝试次数。
+
+用返回的 Task ID 调用 `POST /api/v1/evaluations/tasks/{t}/runs`，传空 JSON 对象和 Idempotency-Key 请求头。同键重发可找回原 Run，换键会新建一次运行。通过 `GET /api/v1/evaluations/runs/{r}` 查真实计数，`GET /api/v1/evaluations/runs/{r}/results` 分页查样本。暂停、恢复和取消分别向 Run 下的 pause、resume、cancel 发送 POST。
+
+Alembic 0005_evaluation_runs 接在 0004_evaluators 后，随现有 Compose migrate 服务升级。3.1 创建的 Run 会停在 QUEUED；独立 Worker 在 3.2 接入。专项验收使用原有 backend/test-compose.ps1，在随机临时数据库执行。
+
+## Phase 3.2 独立调度 Worker
+
+从 code 运行 `docker compose --profile scheduler up -d --build --scale worker=2 --wait`。通过 `docker compose --profile scheduler ps worker` 查看两个进程。正常停止使用 `docker compose --profile scheduler stop worker`。本机开发也可在 backend 目录运行 `.venv/Scripts/python -m app.worker.main`。
+
+迁移 0006_worker_scheduler 增加共享 Case 容量与调度索引。Worker 轮询 PostgreSQL，也订阅 Redis 的 evaluations:wake。每进程初始 4 个槽位，全局初始 16 个，项目、Run、Target、Judge 各自使用原有配置。3.2 已能领取、续租和回收真实执行记录；默认停在 CREATED 尝试的阶段交接点，正式业务调用与评分在 3.3 接入。
+
+## Phase 3.3 执行样本与评分
+
+使用上面的 Compose 命令启动 Worker 后，已排队的 Run 会开始调用其冻结的项目版本。项目出站配置、开发密钥和 Judge 账户需要在 Worker 环境中生效。首次接入项目可沿用默认单次尝试，再按实际服务能力设置超时和重试。按 Run 的 results 查询每条预测、来源 Attempt、正式分数和错误原因。Run 详情的 metrics 含四项指标及各自分母。
+
+EVAL_TRACE_TARGET_VERSIONS 和 EVAL_VERIFIED_IDEMPOTENT_VERSIONS 是独立的项目版本 UUID 数组，默认均为空。前者授予受信目标接收短期轨迹凭证的能力，后者登记已经验证的对端去重能力。完整 Trace 上报属于后续阶段。
+
+## 批量评测（Phase 3.4）
+
+从 code 运行 `docker compose --profile scheduler up -d --build --scale worker=2 --wait`。打开 http://localhost:15173，登录后进入「批量评测」。
+
+1. 选项目并新建任务，选择已发布的项目版本、数据集版本和一个或多个评分器版本。预览页面显示评分顺序和权重，确认后配置冻结。
+2. 点击「启动运行」。同一任务可运行多次，每次有独立进度和结果。详情中可暂停、恢复或取消，浏览器关闭后 Worker 继续执行。
+3. 展开样本查看脱敏输入、实际预测、尝试和评分。按状态筛选或翻页。归档任务后仍可查阅历史。
+
+集成测试使用 `backend/test-compose.ps1`。在隔离的 Compose 测试环境中，设置 `PYTEST_ADDOPTS=tests/phase3_load.py` 可运行分级压测，设置 `EVAL_BENCH_REPORT` 可指定输出 JSON 的位置。停服演练仅限项目 eval-phase34-check，设置 `PYTEST_ADDOPTS=tests/phase3_outage.py`，与常规回归分开执行。

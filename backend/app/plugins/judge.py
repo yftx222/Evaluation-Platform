@@ -5,7 +5,6 @@ import json
 import time
 from typing import Any
 
-import httpx
 from pydantic import ValidationError
 
 from app.application.access.identity import SecretResolver
@@ -13,6 +12,7 @@ from app.application.catalog.store import Fault
 from app.contracts.adapters import AdapterError, UnifiedResponse
 from app.contracts.datasets import Case as CaseView
 from app.contracts.evaluators import EvaluationResult, ScoringContext
+from app.infrastructure import attempt_http as httpx
 from app.infrastructure.resources import Resources, Settings
 from app.plugins.evaluator_configs import JudgeConfig, Verdict
 from app.plugins.http_adapter import DestinationPolicy

@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException
 from starlette.responses import Response
 
-from app.api import datasets, evaluators, members, projects
+from app.api import datasets, evaluations, evaluators, members, projects, run_progress
 from app.application.access.identity import (
     DevelopmentAuthProvider,
     DevelopmentSecretResolver,
@@ -65,6 +65,8 @@ def create_app(
     api.include_router(members.router)
     api.include_router(datasets.router)
     api.include_router(evaluators.router)
+    api.include_router(evaluations.router)
+    api.include_router(run_progress.router)
 
     @api.exception_handler(Fault)
     async def domain_fault(request: Request, exc: Fault) -> JSONResponse:

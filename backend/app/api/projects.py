@@ -148,7 +148,9 @@ async def disable(request: Request, p: UUID, db: Db, who: User) -> Response:
 @router.get("/projects/{p}/permissions")
 async def permissions(request: Request, p: UUID, db: Db, who: User) -> dict[str, object]:
     role = await authorize(db, who, p, "R")
-    actions = ["project:read"]
+    actions = ["project:read", "tasks:read", "results:read"]
+    if role in ("A", "W"):
+        actions.extend(["tasks:write", "runs:control"])
     if role == "A":
         actions.extend(
             ["project:edit", "members:manage", "keys:manage", "versions:publish", "connection:test"]

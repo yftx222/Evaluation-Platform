@@ -21,7 +21,8 @@ from app.contracts.evaluators import (
     ScoringContext,
     Trial,
 )
-from app.plugins.evaluators import lookup, registry
+from app.plugins.evaluator_releases import installed
+from app.plugins.evaluators import lookup
 from app.plugins.scoring_functions import TYPES
 
 CATALOG = """SELECT e.*,(SELECT version FROM evaluator_versions WHERE evaluator_id=e.id
@@ -69,7 +70,7 @@ async def graph(
             )
             if not owner["enabled"]:
                 raise Fault(422, "INVALID_CHILD", "不能选用已停用的子评分器")
-        registry.get(version["impl_key"], version["build"])
+        installed(version["impl_key"], version["build"])
         for child in version["members"]:
             await visit(UUID(child["child_version_id"]))
         active.remove(id_)
@@ -87,7 +88,7 @@ async def publish(
     if not owner["enabled"]:
         raise Fault(409, "DISABLED", "请先启用评分器")
     check_size(body.config, 32768)
-    plugin = registry.get(body.impl_key, body.build)
+    plugin = installed(body.impl_key, body.build)
     if plugin.kind != owner["kind"]:
         raise Fault(422, "INVALID_KIND", "实现类型与目录不一致")
     try:
@@ -176,47 +177,57 @@ async def trial(
 ) -> EvaluationResult:
     deadline = time.monotonic() + TRIAL_TIMEOUT_SECONDS
     results: dict[UUID, EvaluationResult] = {}
-    inputs = body.model_dump(exclude_unset=True)
-    for id_, v in nodes.items():
-        members = [Member.model_validate(x) for x in v["members"]]
-        plugin = registry.get(v["impl_key"], v["build"])
-        ctx = ScoringContext(
-            v,
-            deadline,
-            body.materials,
-            judge if plugin.kind == "llm_judge" else None,
-            tuple((m, results[m.child_version_id]) for m in members),
-        )
-        if time.monotonic() >= deadline:
-            result = ctx.result("ERROR", "TRIAL_TIMEOUT")
-        elif plugin.kind == "code" and any(
-            type(lookup(inputs, path)) not in TYPES[t] for path, t in plugin.requirements.items()
-        ):
-            result = ctx.result("SKIPPED", "缺少必需评分输入：" + "、".join(plugin.requirements))
-        else:
-            try:
-                async with asyncio.timeout(deadline - time.monotonic()):
-                    raw = await plugin.factory().evaluate(body.case, body.prediction, ctx)
-                if time.monotonic() >= deadline:
-                    raise TimeoutError
-                # Revalidate even a model constructed or mutated by a trusted plugin.
-                result = EvaluationResult.model_validate(
-                    raw.model_dump(warnings=False), strict=True
-                )
-                if (
-                    result.evaluator_version_id,
-                    result.evaluator_name,
-                    result.evaluator_version,
-                ) != (id_, v["name"], v["version"]):
-                    raise ValueError("unexpected evaluator identity")
-            except TimeoutError:
-                logger.warning("evaluator timed out version_id=%s", id_)
-                result = ctx.result("ERROR", "TRIAL_TIMEOUT")
-            except Exception as exc:
-                # CancelledError derives from BaseException. Never log plugin text or sample data.
-                logger.error(
-                    "evaluator failed version_id=%s exception_type=%s", id_, type(exc).__name__
-                )
-                result = ctx.result("ERROR", "EVALUATOR_FAILED")
-        results[id_] = result
+    for id_, version in nodes.items():
+        results[id_] = await evaluate_node(id_, version, body, judge, deadline, results)
     return results[body.version_id]
+
+
+async def evaluate_node(
+    id_: UUID,
+    v: dict[str, Any],
+    body: Trial,
+    judge: JudgeClient,
+    deadline: float,
+    results: dict[UUID, EvaluationResult],
+    timeout_code: str = "TRIAL_TIMEOUT",
+) -> EvaluationResult:
+    inputs = body.model_dump(exclude_unset=True)
+    members = [Member.model_validate(x) for x in v["members"]]
+    plugin = installed(v["impl_key"], v["build"])
+    ctx = ScoringContext(
+        v,
+        deadline,
+        body.materials,
+        judge if plugin.kind == "llm_judge" else None,
+        tuple((m, results[m.child_version_id]) for m in members),
+    )
+    if time.monotonic() >= deadline:
+        result = ctx.result("ERROR", timeout_code)
+    elif plugin.kind == "code" and any(
+        type(lookup(inputs, path)) not in TYPES[t] for path, t in plugin.requirements.items()
+    ):
+        result = ctx.result("SKIPPED", "缺少必需评分输入：" + "、".join(plugin.requirements))
+    else:
+        try:
+            async with asyncio.timeout(deadline - time.monotonic()):
+                raw = await plugin.factory().evaluate(body.case, body.prediction, ctx)
+            if time.monotonic() >= deadline:
+                raise TimeoutError
+            # Revalidate even a model constructed or mutated by a trusted plugin.
+            result = EvaluationResult.model_validate(raw.model_dump(warnings=False), strict=True)
+            if (
+                result.evaluator_version_id,
+                result.evaluator_name,
+                result.evaluator_version,
+            ) != (id_, v["name"], v["version"]):
+                raise ValueError("unexpected evaluator identity")
+        except TimeoutError:
+            logger.warning("evaluator timed out version_id=%s", id_)
+            result = ctx.result("ERROR", timeout_code)
+        except Exception as exc:
+            # CancelledError derives from BaseException. Never log plugin text or sample data.
+            logger.error(
+                "evaluator failed version_id=%s exception_type=%s", id_, type(exc).__name__
+            )
+            result = ctx.result("ERROR", "EVALUATOR_FAILED")
+    return result

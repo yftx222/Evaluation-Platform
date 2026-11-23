@@ -13,7 +13,6 @@ from types import ModuleType
 from typing import Any
 from urllib.parse import urlsplit
 
-import httpx
 from pydantic import ValidationError
 
 from app.application.access.identity import SecretResolver
@@ -26,6 +25,7 @@ from app.contracts.adapters import (
     UnifiedResponse,
 )
 from app.contracts.http import AdapterConfig, TargetRule
+from app.infrastructure import attempt_http as httpx
 from app.plugins.adapter_protocols import (
     AgentMapping,
     AgentOptions,
@@ -298,6 +298,14 @@ class AdapterRegistry:
             return self._digests[kind, build]
         except KeyError as exc:
             raise AdapterError("VERSION_UNAVAILABLE", "not_sent") from exc
+
+    def capabilities(self, kind: str, build: str) -> tuple[str, ...]:
+        self.digest(kind, build)
+        return self._plugins[kind, build].capabilities
+
+    def mapping_for(self, config: AdapterConfig, project: str) -> Mapping:
+        self.digest(config.kind, config.build)
+        return self._plugins[config.kind, config.build].factory(config, project)
 
     def describe(self) -> list[dict[str, Any]]:
         return [

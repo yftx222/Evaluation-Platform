@@ -73,11 +73,12 @@ async def authorize(
     level: str,
     *,
     key_read: bool = False,
+    key_scope: str = "project:read",
     lock: bool = False,
 ) -> str:
     await row(db, "SELECT id FROM projects WHERE id=:p" + (" FOR UPDATE" if lock else ""), p=p)
     if isinstance(actor, ProjectKey):
-        if key_read and actor.project == p and "project:read" in actor.scopes:
+        if key_read and actor.project == p and key_scope in actor.scopes:
             return "R"
         raise Fault(403, "FORBIDDEN", "凭证范围不足")
     if "Org" in actor.org_roles:

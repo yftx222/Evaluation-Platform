@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import threading
-import time
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -54,6 +54,7 @@ class EchoMapping(Mapping):
 @pytest.fixture
 def wire() -> Iterator[tuple[str, TargetRule, list[dict[str, Any]]]]:
     calls: list[dict[str, Any]] = []
+    close_slow = threading.Event()
 
     class Endpoint(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -75,7 +76,8 @@ def wire() -> Iterator[tuple[str, TargetRule, list[dict[str, Any]]]]:
                 }
             )
             if self.path.endswith("/slow"):
-                time.sleep(0.25)
+                close_slow.wait(5)
+                return
             status = {
                 "/wire/busy": 429,
                 "/wire/down": 503,
@@ -142,6 +144,7 @@ def wire() -> Iterator[tuple[str, TargetRule, list[dict[str, Any]]]]:
             calls,
         )
     finally:
+        close_slow.set()
         server.shutdown()
         server.server_close()
         thread.join()
@@ -484,3 +487,22 @@ def test_published_protocols_share_dataset(
         assert len(calls) == 3 and all(
             "PRIVATE_REFERENCE" not in json.dumps(c["body"]) for c in calls
         )
+
+
+def test_connect_timeout_before_sending(
+    monkeypatch: pytest.MonkeyPatch, wire: tuple[str, TargetRule, list[dict[str, Any]]]
+) -> None:
+    url, rule, calls = wire
+
+    async def timeout(self: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("connect timed out", request=request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", timeout)
+    adapter = registry.create(
+        config(url, "http"), DestinationPolicy([rule], True), secrets(), "shop"
+    )
+    with pytest.raises(AdapterError) as failure:
+        asyncio.run(adapter.execute(sample()))
+    assert failure.value.code == "TARGET_TIMEOUT"
+    assert failure.value.delivery_state == "not_sent" and failure.value.retryable
+    assert not calls

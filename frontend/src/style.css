@@ -131,3 +131,21 @@ code {
 
 .layout > div { min-width: 0; }
 .layout pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.eval button {cursor:pointer; padding:.45em .8em; color:#173c58; background:#f7fafc; border:1px solid #aebec9; border-radius:4px}
+.eval button:disabled {opacity:.5; cursor:default}
+.eval .eval-create {margin:.8rem 0; background:#204c70; color:white}
+.eval .project[aria-pressed=true] {border-left:4px solid #226589;font-weight:600}
+.eval-heading,.eval-counts {display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.eval .layout section + section {margin-top:16px}
+.eval fieldset {border:0;padding:0}
+.eval label {margin:.5rem 0}
+.eval .eval-check {display:flex;align-items:center}
+.eval pre {padding:12px;background:#f4f7fa;max-height:24rem;overflow:auto}
+.eval table {width:100%;border-collapse:collapse;margin:.7rem 0}
+.eval td,.eval th {text-align:left;padding:.45em;border-bottom:1px solid #d6dfe5}
+.eval progress {width:100%;accent-color:#226589}
+.eval .eval-counts {justify-content:flex-start;font-size:.88em}
+.eval [role=alert] {color:#983821}
+.eval details {margin:.6rem 0}
+.eval summary {cursor:pointer}

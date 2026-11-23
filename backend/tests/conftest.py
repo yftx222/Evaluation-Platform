@@ -49,9 +49,11 @@ def clean_db(services: Settings) -> Iterator[str]:
 
 
 @pytest.fixture
-def catalog(clean_db: str, services: Settings) -> tuple[Settings, dict[str, str]]:
+def catalog(
+    clean_db: str, services: Settings, request: pytest.FixtureRequest
+) -> tuple[Settings, dict[str, str]]:
     subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", getattr(request, "param", "head")],
         env={**os.environ, "EVAL_DATABASE_URL": clean_db},
         check=True,
     )

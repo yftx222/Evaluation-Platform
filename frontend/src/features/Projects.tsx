@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
+import Evaluations from "./Evaluations";
 import Datasets from "./Datasets";
 import Evaluators from "./Evaluators";
 import type { FormEvent, ReactNode } from "react";
@@ -25,12 +26,23 @@ type Row = {
   scopes?: string[];
 };
 type Page<T> = { items: T[]; next_cursor: string | null };
-type Call = <T>(url: string, method?: string, body?: unknown) => Promise<T>;
+type Call = <T>(
+  url: string,
+  method?: string,
+  body?: unknown,
+  headers?: Record<string, string>,
+) => Promise<T>;
 function client(token: string): Call {
-  return async <T,>(url: string, method = "GET", body?: unknown) => {
+  return async <T,>(
+    url: string,
+    method = "GET",
+    body?: unknown,
+    headers?: Record<string, string>,
+  ) => {
     const res = await fetch("/api/v1" + url, {
       method,
       headers: {
+        ...headers,
         Authorization: "Bearer " + token,
         "Content-Type": "application/json",
       },
@@ -45,12 +57,12 @@ function client(token: string): Call {
     )
       return payload.data as T;
     if (!res.ok)
-      throw new Error(
+      throw Object.assign(new Error(
         payload.error?.message +
           " [" +
           (payload.error?.code ?? res.status) +
           "]",
-      );
+      ), { status: res.status });
     return payload.data as T;
   };
 }
@@ -642,7 +654,7 @@ export default function Projects() {
     [projects, setProjects] = useState<Row[]>([]),
     [selected, setSelected] = useState(""),
     [error, setError] = useState("");
-  const call = client(token);
+  const call = useMemo(() => client(token), [token]);
   async function refresh() {
     setProjects(await all(call, "/projects"));
   }
@@ -658,6 +670,7 @@ export default function Projects() {
             <Button onClick={() => setCatalog("projects")}>项目管理</Button>
             <Button onClick={() => setCatalog("datasets")}>数据集管理</Button>
             <Button onClick={() => setCatalog("evaluators")}>评分器管理</Button>
+            <Button onClick={() => setCatalog("evaluations")}>批量评测</Button>
           </nav>
         )}
         {token && (
@@ -687,6 +700,8 @@ export default function Projects() {
         >
           <Input name="token" label="组织访问令牌" type="password" />
         </Editor>
+      ) : catalog === "evaluations" ? (
+        <Evaluations token={token} projects={projects} call={call} />
       ) : catalog === "evaluators" ? (
         <Evaluators call={call} canEdit={canEdit} />
       ) : catalog === "datasets" ? (

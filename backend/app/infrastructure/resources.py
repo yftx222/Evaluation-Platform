@@ -13,6 +13,7 @@ from app.application.access.identity import DevelopmentIdentity
 from app.application.catalog.store import Fault, row
 from app.contracts.evaluators import JudgeAccount
 from app.contracts.http import TargetRule
+from app.infrastructure.attempt_http import active
 
 
 class Settings(BaseSettings):
@@ -24,6 +25,8 @@ class Settings(BaseSettings):
     targets: dict[str, list[TargetRule]] = Field(default_factory=dict)
     secrets: dict[str, dict[str, dict[str, SecretStr]]] = Field(default_factory=dict)
     judge_accounts: dict[str, JudgeAccount] = Field(default_factory=dict)
+    trace_target_versions: set[UUID] = Field(default_factory=set)
+    verified_idempotent_versions: set[UUID] = Field(default_factory=set)
     pool_size: int = Field(5, ge=1, le=100)
 
 
@@ -47,6 +50,22 @@ class Resources:
     async def transaction(self) -> AsyncIterator[AsyncSession]:
         async with self.sessions.begin() as session:
             yield session
+
+    async def reserve_call(self, db: AsyncSession, quota: str, timeout: float) -> dict[str, object]:
+        lease = await row(
+            db,
+            """INSERT INTO call_leases(quota_key,expires_at)
+            VALUES (:q,now()+make_interval(secs=>:ttl)) RETURNING id""",
+            q=quota,
+            ttl=timeout + 2,
+        )
+        wire = active.get()
+        if wire and wire.attempt:
+            await db.execute(
+                text("UPDATE call_leases SET attempt_id=:a WHERE id=:id"),
+                {"a": wire.attempt, "id": lease["id"]},
+            )
+        return lease
 
     @asynccontextmanager
     async def target_permit(self, project: UUID, timeout: float) -> AsyncIterator[None]:
@@ -73,13 +92,7 @@ class Resources:
             )
             if not limits["due"] or count >= limits["target_max_parallel"]:
                 raise Fault(429, "TARGET_LIMIT", "项目调用达到限额")
-            lease = await row(
-                db,
-                """INSERT INTO call_leases(quota_key,expires_at)
-                VALUES (:q,now()+make_interval(secs=>:ttl)) RETURNING id""",
-                q=quota,
-                ttl=timeout + 2,
-            )
+            lease = await self.reserve_call(db, quota, timeout)
             await db.execute(
                 text("""UPDATE projects SET next_call_at=now()+
                 make_interval(secs=>60.0/rpm) WHERE id=:p"""),
@@ -108,20 +121,19 @@ class Resources:
             counts = await row(
                 db,
                 """SELECT count(*) FILTER(WHERE quota_key=:q) AS active,
-                count(*) FILTER(WHERE quota_key=:w) AS recent FROM call_leases
+                count(*) FILTER(WHERE quota_key=:w) AS recent,
+                ceil(extract(epoch FROM min(expires_at) FILTER(WHERE quota_key=:w)
+                    -clock_timestamp())) AS rpm_wait FROM call_leases
                 WHERE quota_key IN (:q,:w)""",
                 q=quota,
                 w=window,
             )
             if counts["active"] >= account.max_parallel or counts["recent"] >= account.rpm:
-                raise Fault(429, "JUDGE_LIMIT", "裁判账户试评额度已用完")
-            lease = await row(
-                db,
-                """INSERT INTO call_leases(quota_key,expires_at)
-                VALUES (:q,now()+make_interval(secs=>:ttl)) RETURNING id""",
-                q=quota,
-                ttl=timeout + 2,
-            )
+                wire = active.get()
+                if wire and counts["recent"] >= account.rpm:
+                    wire.retry_after = str(max(1, int(counts["rpm_wait"])))
+                raise Fault(429, "JUDGE_LIMIT", "裁判账户额度已用完")
+            lease = await self.reserve_call(db, quota, timeout)
             await db.execute(
                 text(
                     "INSERT INTO call_leases(quota_key,expires_at) "

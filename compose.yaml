@@ -47,6 +47,28 @@ services:
       interval: 5s
       timeout: 6s
       retries: 10
+  worker:
+    image: ai-evaluation-api:local
+    profiles: ["scheduler"]
+    command: ["python", "-m", "app.worker.main"]
+    environment:
+      EVAL_DATABASE_URL: postgresql+asyncpg://eval:${POSTGRES_PASSWORD:?set a URL-safe local password}@postgres:5432/eval
+      EVAL_REDIS_URL: redis://redis:6379/0
+      EVAL_MODE: development
+      EVAL_TARGETS: ${EVAL_TARGETS:-{}}
+      EVAL_SECRETS: ${EVAL_SECRETS:-{}}
+      EVAL_JUDGE_ACCOUNTS: ${EVAL_JUDGE_ACCOUNTS:-{}}
+      EVAL_TRACE_TARGET_VERSIONS: ${EVAL_TRACE_TARGET_VERSIONS:-[]}
+      EVAL_VERIFIED_IDEMPOTENT_VERSIONS: ${EVAL_VERIFIED_IDEMPOTENT_VERSIONS:-[]}
+      EVAL_WORKER_SLOTS: ${EVAL_WORKER_SLOTS:-4}
+      EVAL_WORKER_GLOBAL_SLOTS: ${EVAL_WORKER_GLOBAL_SLOTS:-16}
+      EVAL_WORKER_BATCH: ${EVAL_WORKER_BATCH:-4}
+      EVAL_WORKER_POLL_S: ${EVAL_WORKER_POLL_S:-1}
+      EVAL_WORKER_LEASE_S: ${EVAL_WORKER_LEASE_S:-30}
+      EVAL_WORKER_HEARTBEAT_S: ${EVAL_WORKER_HEARTBEAT_S:-5}
+      EVAL_WORKER_SHUTDOWN_S: ${EVAL_WORKER_SHUTDOWN_S:-5}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
   frontend:
     build: ./frontend
     ports: ["127.0.0.1:15173:80"]
