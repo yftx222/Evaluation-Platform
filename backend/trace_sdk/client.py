@@ -53,6 +53,7 @@ class TraceSession:
         self._closing = False
         self._partial = False
         self.status: str | None = None
+        self.confirmed_status: str | None = None
         self._sender = asyncio.create_task(self._send())
 
     @classmethod
@@ -65,15 +66,17 @@ class TraceSession:
             return None
         try:
             identity = UUID(context["x-trace-id"])
+            return cls(base_url, identity, context["x-trace-write"], **options)
         except ValueError:
             return None
-        return cls(base_url, identity, context["x-trace-write"], **options)
 
     def add(self, event_type: str, name: str, **fields: Any) -> str | None:
         if self._closing or self._sender.done():
             return None
         self._sequence += 1
-        key = uuid4().hex
+        # Short hex groups keep generated IDs distinct from sensitive phone-like text.
+        raw_key = uuid4().hex
+        key = "-".join(raw_key[i : i + 8] for i in range(0, len(raw_key), 8))
         if self._queue.full():
             self._partial = True
             return None
@@ -170,26 +173,37 @@ class TraceSession:
                     ).encode(),
                 )
                 if result and result.get("status") in {"COMPLETE", "PARTIAL", "MISSING"}:
-                    self.status = result["status"]
-        except (TimeoutError, httpx.HTTPError, ValueError, TypeError):
+                    self.confirmed_status = result["status"]
+                    self.status = "PARTIAL" if self._partial else result["status"]
+        except Exception:
+            # Telemetry failures must not replace the application's response or exception.
             self._partial = True
         finally:
+            if self.status is None:
+                self.status = "PARTIAL"
+                self._partial = True
             self._closing = True
             self._token = ""
             while not self._queue.empty():
                 self._queue.get_nowait()
                 self._queue.task_done()
 
+    @property
+    def finalize_confirmed(self) -> bool:
+        return self.confirmed_status is not None
+
     async def flush(self) -> bool:
         await self._queue.join()
         return not self._partial
 
-    def finish(self, *, complete: bool = True) -> asyncio.Task[None]:
+    def finish(self, *, complete: bool = True) -> asyncio.Future[None]:
         """Signal completion without waiting for HTTP in the business request."""
-        self._partial |= not complete
-        self._closing = True
-        self._wake.set()
-        return self._sender
+        if not self._sender.done():
+            self._partial |= not complete
+            self._closing = True
+            self._wake.set()
+        # Cancelling a waiter must not cancel the shared sender or other waiters.
+        return asyncio.shield(self._sender)
 
     async def __aenter__(self) -> Self:
         return self
@@ -200,4 +214,12 @@ class TraceSession:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.finish(complete=exc_type is None)
+        sender = self.finish(complete=exc_type is None)
+        try:
+            await asyncio.shield(sender)
+        except asyncio.CancelledError:
+            self._partial = True
+            # Flush within the sender's original deadline. Preserve caller cancellation.
+            await asyncio.shield(sender)
+            self.status = "PARTIAL"
+            raise

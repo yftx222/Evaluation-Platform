@@ -41,7 +41,7 @@ def safe(value: Any) -> Any:
 
 
 def reply(req: Request, data: object) -> dict[str, object]:
-    return envelope(req, safe(jsonable_encoder(data)))
+    return envelope(req, jsonable_encoder(safe(data)))
 
 
 async def snapshot(db: Db, who: Actor, r: UUID) -> dict[str, Any]:
@@ -235,7 +235,7 @@ async def bad_cases(
     items = await metrics.rows(
         db, sql + " LIMIT :n OFFSET :start", {**args, "n": limit + 1, "start": offset}
     )
-    return reply(
+    return envelope(
         req,
         {
             "items": [public_case(v) for v in items[:limit]],
@@ -253,7 +253,7 @@ def chunks(fp: SpooledTemporaryFile[bytes]) -> Iterator[bytes]:
 
 
 def dump(value: Any) -> bytes:
-    return json.dumps(safe(jsonable_encoder(value)), ensure_ascii=False, allow_nan=False).encode()
+    return json.dumps(jsonable_encoder(value), ensure_ascii=False, allow_nan=False).encode()
 
 
 @router.get("/runs/{r}/export")
@@ -293,7 +293,7 @@ async def export(
 
         first = True
         if format == "json":
-            fp.write(b'{"report":' + dump(info) + b',"cases":[')
+            fp.write(b'{"report":' + dump(safe(info)) + b',"cases":[')
         else:
             fp.write(b"\xef\xbb\xbf")
             write_csv(

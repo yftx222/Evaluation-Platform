@@ -27,6 +27,7 @@ from app.infrastructure.resources import Resources, Settings
 from app.worker.scheduler import Lease, claim, initialize, release
 from app.worker.settings import WorkerSettings
 from app.worker.trace import AttemptTraceIssuer
+from trace_sdk.client import TraceSession
 
 BATCH = ROOT + "/trace-write/events:batch"
 FINAL = ROOT + "/trace-write/finalize"
@@ -348,16 +349,22 @@ def test_real_worker_trace_callback(catalog: tuple[Settings, dict[str, str]]) ->
                 with httpx.Client(
                     headers={"Authorization": "Bearer " + tracer}, timeout=3, trust_env=False
                 ) as sender:
-                    if query == "two":
+                    if query == "one":
+
+                        async def collect() -> None:
+                            sdk = TraceSession.from_headers(origin, dict(self.headers))
+                            assert sdk
+                            async with sdk:
+                                assert sdk.add("MODEL_CALL", "answer")
+                            assert sdk.status == "COMPLETE" and sdk.finalize_confirmed
+
+                        asyncio.run(collect())
+                    elif query == "two":
                         # A real refused callback connection must leave the prediction intact.
                         with pytest.raises(httpx.ConnectError):
                             sender.post(offline + BATCH, json={"events": [event(1)]})
                     else:
-                        entry = (
-                            event(1)
-                            if query == "one"
-                            else dict(event(1, "step-1"), event_key="child")
-                        )
+                        entry = dict(event(1, "step-1"), event_key="child")
                         written = sender.post(origin + BATCH, json={"events": [entry]})
                         assert written.is_success, written.text
                         closed = sender.post(
@@ -407,6 +414,15 @@ def test_real_worker_trace_callback(catalog: tuple[Settings, dict[str, str]]) ->
                     assert run["status"] == "COMPLETED"
                     results = api.get(url + "/results").json()["data"]["items"]
                     assert len(results) == 3
+                    summary = api.get(ROOT + "/reports/runs/" + rid).json()["data"]["summary"]
+                    assert summary["trace_mode"] == "callback"
+                    assert (
+                        summary["complete"],
+                        summary["partial"],
+                        summary["missing"],
+                        summary["not_collected"],
+                    ) == (1, 1, 1, 0)
+                    assert summary["trace_complete_rate"]["denominator"] == 3
                     for item in results:
                         key = item["case_key"]
                         trace_id, token = observed[key]
@@ -435,13 +451,16 @@ def test_real_worker_trace_callback(catalog: tuple[Settings, dict[str, str]]) ->
             thread.join(timeout=3)
 
 
-def test_append_during_worker_exit(window: Window) -> None:
+@pytest.mark.parametrize("finalizing", [False, True])
+def test_append_during_worker_exit(window: Window, finalizing: bool) -> None:
     w = window
+    if finalizing:
+        assert w.write(event(1)).is_success
     barrier = threading.Barrier(2)
 
     def post() -> httpx.Response:
         barrier.wait(timeout=5)
-        return w.write(event(1))
+        return w.close(1) if finalizing else w.write(event(1))
 
     async def end() -> None:
         resources = Resources(w.settings)
@@ -459,10 +478,12 @@ def test_append_during_worker_exit(window: Window) -> None:
         asyncio.run(end())
         response = writing.result()
     sealed = w.api.get(w.url).json()["data"]
-    assert (response.status_code, sealed["status"], sealed["event_count"]) in [
-        (200, "PARTIAL", 1),
-        (401, "MISSING", 0),
-    ]
+    outcomes = (
+        [(200, "COMPLETE", 1), (401, "PARTIAL", 1)]
+        if finalizing
+        else [(200, "PARTIAL", 1), (401, "MISSING", 0)]
+    )
+    assert (response.status_code, sealed["status"], sealed["event_count"]) in outcomes
     assert w.write(event(2)).status_code == 401
 
 

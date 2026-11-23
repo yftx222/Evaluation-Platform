@@ -2,6 +2,9 @@ import asyncio
 import csv
 import io
 import json
+import os
+import subprocess
+import sys
 import threading
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -9,6 +12,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from test_evaluation_runs import ROOT, create, prepare
 from test_trace_write import configured
 
@@ -141,6 +145,20 @@ def test_reports_and_comparison(catalog: tuple[Settings, dict[str, str]]) -> Non
             assert api.get(rp + a).status_code == 409
             poor.add("two")
             asyncio.run(drain())
+
+            # Use normal INSERTs with valid UUIDs that contain a phone-like substring.
+            async def set_test_id_default() -> None:
+                resources = Resources(settings)
+                try:
+                    async with resources.transaction() as db:
+                        await db.execute(
+                            text("""ALTER TABLE case_executions ALTER COLUMN id SET DEFAULT
+                                (left(gen_random_uuid()::text,24) || 'a13800138000')::uuid""")
+                        )
+                finally:
+                    await resources.close()
+
+            asyncio.run(set_test_id_default())
             b = start(task)
             poor.clear()
             poor.add("three")
@@ -154,7 +172,39 @@ def test_reports_and_comparison(catalog: tuple[Settings, dict[str, str]]) -> Non
                 "denominator": 3,
                 "value": 2 / 3,
             }
-            assert summary["missing"] == 3 and summary["evaluators"][0]["errors"] == 0
+            assert summary["evaluators"][0]["errors"] == 0
+            assert summary["trace_mode"] == "disabled"
+            assert (
+                summary["not_collected"],
+                summary["missing"],
+                summary["partial"],
+                summary["complete"],
+            ) == (3, 0, 0, 0)
+            assert summary["trace_complete_rate"] == {
+                "numerator": 0,
+                "denominator": 0,
+                "value": None,
+            }
+            disabled = read(ROOT + f"/evaluations/runs/{b}/results")["items"]
+            assert all(
+                c["trace_status"] == "NOT_COLLECTED" and not c["trace_ids"] for c in disabled
+            )
+            assert all(a["trace_id"] is None for c in disabled for a in c["attempts"])
+
+            async def allocated() -> int:
+                res = Resources(settings)
+                try:
+                    async with res.transaction() as db:
+                        return int(
+                            await db.scalar(
+                                text("SELECT count(*) FROM traces WHERE run_id=:r"), {"r": UUID(b)}
+                            )
+                            or 0
+                        )
+                finally:
+                    await res.close()
+
+            assert asyncio.run(allocated()) == 0
             assert result["usage"]["estimated_cost"] == 24 / 1000000
             assert result["usage"]["models"][0]["provider"] == "local-provider"
             assert (
@@ -172,7 +222,61 @@ def test_reports_and_comparison(catalog: tuple[Settings, dict[str, str]]) -> Non
                 page = read(rp + b + "/bad-cases", params={"signal": signal, "baseline_id": a})
                 assert [v["case_key"] for v in page["items"]] == [key]
                 assert read(page["items"][0]["evidence_url"])["scores"]
+                if key == "three":
+                    assert page["items"][0]["execution_id"].endswith("a13800138000")
             assert len(read(rp + b + "/bad-cases", params={"signal": "token_limit"})["items"]) == 3
+            expected_keys = {"-123", "two", "three"}
+            expected_signals = {
+                "all": expected_keys,
+                "any": expected_keys,
+                "case_failed": set(),
+                "score_error": set(),
+                "low_score": {"three"},
+                "trace_partial": set(),
+                "trace_missing": set(),
+                "new_failure": {"three"},
+                "fixed": {"two"},
+                "regressed": {"three"},
+                "timed_out": set(),
+                "child_failed": set(),
+                "token_limit": expected_keys,
+                "latency_limit": set(),
+            }
+            for baseline in (None, a):
+                for signal, keys in expected_signals.items():
+                    args = {"signal": signal, **({"baseline_id": baseline} if baseline else {})}
+                    if not baseline and signal in ("new_failure", "fixed", "regressed"):
+                        for route in ("/bad-cases", "/export"):
+                            res = api.get(rp + b + route, params=args)
+                            assert (
+                                res.status_code == 422
+                                and res.json()["error"]["code"] == "BASELINE_REQUIRED"
+                            )
+                        continue
+                    items = []
+                    offset = 0
+                    while True:
+                        part = read(
+                            rp + b + "/bad-cases", params={**args, "offset": offset, "limit": 1}
+                        )
+                        items.extend(part["items"])
+                        if part["next_offset"] is None:
+                            break
+                        offset += 1
+                        assert part["next_offset"] == offset <= len(keys)
+                    assert {c["case_key"] for c in items} == keys and len(items) == len(keys)
+                    assert all(
+                        c["trace_status"] == "NOT_COLLECTED" and c["trace_id"] is None
+                        for c in items
+                    )
+                    exported_cases = api.get(rp + b + "/export", params=args).json()["cases"]
+                    assert exported_cases == items
+                    csv_response = api.get(rp + b + "/export", params={**args, "format": "csv"})
+                    assert csv_response.is_success
+                    rows = csv.DictReader(io.StringIO(csv_response.content.decode("utf-8-sig")))
+                    assert [v["execution_id"] for v in rows if v["record_type"] == "case"] == [
+                        v["execution_id"] for v in items
+                    ]
             private_group = read(rp + b + "/metrics", params={"dimension": "difficulty"})
             assert private_group["items"][0]["label"] == "[REDACTED]"
             wire = api.get(rp + b + "/export")
@@ -240,12 +344,60 @@ def test_reports_and_comparison(catalog: tuple[Settings, dict[str, str]]) -> Non
             if read(ROOT + f"/evaluations/runs/{z}")["status"] != "CANCELLED":
                 asyncio.run(drain())
             third = read(ROOT + "/reports/compare", params={"run_id": [a, b, z]})["comparisons"][1]
-            assert {"project_version", "dataset_version", "evaluator_dag"} <= set(
-                third["differences"]
-            )
+            assert {
+                "project_version",
+                "dataset_version",
+                "evaluator_dag",
+                "trace_capabilities",
+            } <= set(third["differences"])
             assert not third["comparable"] and third["changes"] is None and third["deltas"] is None
             assert read(rp + z)["summary"]["total_tokens"] is None
             assert api.get(rp + z + "/bad-cases", params={"baseline_id": a}).status_code == 409
+            # Exercise a populated upgrade from 0010 with genuine legacy disabled-mode traces.
+            historical = start(task)
+
+            def migrate(command: str, revision: str) -> None:
+                subprocess.run(
+                    [sys.executable, "-m", "alembic", command, revision],
+                    check=True,
+                    env={
+                        **os.environ,
+                        "EVAL_DATABASE_URL": settings.database_url.get_secret_value(),
+                    },
+                )
+
+            migrate("downgrade", "0010_trace_archives")
+
+            async def create_legacy_attempt() -> str:
+                res = Resources(settings)
+                try:
+                    lease = await claim(res, WorkerSettings())
+                    assert lease and lease.run == UUID(historical)
+                    await CaseRunner(settings)(res, lease)
+                    async with res.transaction() as db:
+                        return str(
+                            await db.scalar(
+                                text("SELECT id FROM traces WHERE attempt_id=:a"),
+                                {"a": lease.attempt},
+                            )
+                        )
+                finally:
+                    await res.close()
+
+            legacy_id = asyncio.run(create_legacy_attempt())
+            before = read(ROOT + "/traces/" + legacy_id)
+            assert before["status"] == "MISSING"
+            migrate("upgrade", "head")
+            asyncio.run(drain())
+            assert read(ROOT + "/traces/" + legacy_id) == before
+            assert read(rp + b) == result
+            history = read(rp + historical)["summary"]
+            assert history["not_collected"] == 3 and history["missing"] == 0
+            historical_cases = read(ROOT + f"/evaluations/runs/{historical}/results")["items"]
+            assert all(
+                c["trace_status"] == "NOT_COLLECTED" and not c["trace_ids"]
+                for c in historical_cases
+            )
     finally:
         srv.shutdown()
         srv.server_close()

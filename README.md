@@ -1,5 +1,7 @@
 # AI 评测中台开发工程
 
+Phase 4 文档：[轨迹模型](docs/trace-data-model.md) · [写入与查询 API](docs/trace-write-api.md) · [事件格式](docs/trace-event-schema.md) · [Agent SDK 接入](docs/trace-sdk-guide.md) · [评分证据](docs/evidence-model.md) · [评测报告](docs/evaluation-report.md) · [安全与留存](docs/trace-security-and-retention.md) · [验收记录](docs/phase-4-acceptance.md)
+
 分别在两个终端运行。后端需要 Python 3.12+ 和 uv，前端使用 Node 22.12+ 或 Node 24 和 npm。
 
 **后端**（从 code/backend 运行）
