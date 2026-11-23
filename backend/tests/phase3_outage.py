@@ -124,7 +124,9 @@ def test_dependency_outages(catalog: tuple[Settings, dict[str, str]]) -> None:
                 adapter={
                     "endpoint": base + "/ask",
                     "probe_endpoint": base + "/ready",
-                    "timeout_s": 18,
+                    # The in-flight permit survives a DB outage until the configured
+                    # call timeout + 2s. Exercise that expiry within the drill budget.
+                    "timeout_s": 6,
                 },
             )
             task = create(
