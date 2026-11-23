@@ -1,0 +1,39 @@
+name: phase-one-checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - uses: actions/setup-node@v4
+        with: {node-version: "24"}
+      - uses: astral-sh/setup-uv@v6
+      - name: Backend checks
+        working-directory: backend
+        run: |
+          uv sync --locked --group test
+          uv run ruff check app migrations tests dev_identity.py
+          uv run ruff format --check app migrations tests dev_identity.py
+          uv run --group test mypy
+      - name: Frontend checks
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+      - name: Compose and integration tests
+        shell: bash
+        run: |
+          set -eu
+          export POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+          docker compose -f compose.yaml -f compose.test.yaml up -d --build --wait
+          pg=$(docker compose -f compose.yaml -f compose.test.yaml port postgres 5432)
+          redis=$(docker compose -f compose.yaml -f compose.test.yaml port redis 6379)
+          export EVAL_DATABASE_URL="postgresql+asyncpg://eval:$POSTGRES_PASSWORD@$pg/eval"
+          export EVAL_REDIS_URL="redis://$redis" EVAL_INTEGRATION=1
+          cd backend
+          uv run --locked --group test pytest -q

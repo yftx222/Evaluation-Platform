@@ -1,0 +1,61 @@
+name: ai-evaluation
+x-api: &api
+  image: ai-evaluation-api:local
+  environment:
+    EVAL_DATABASE_URL: postgresql+asyncpg://eval:${POSTGRES_PASSWORD:?set a URL-safe local password}@postgres:5432/eval
+    EVAL_REDIS_URL: redis://redis:6379/0
+    EVAL_MODE: development
+    EVAL_IDENTITIES: ${EVAL_IDENTITIES:-[]}
+    EVAL_TARGETS: ${EVAL_TARGETS:-{}}
+    EVAL_SECRETS: ${EVAL_SECRETS:-{}}
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: eval
+      POSTGRES_DB: eval
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a URL-safe local password}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "eval", "-d", "eval"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:7-alpine
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *api
+    command: ["alembic","upgrade","head"]
+    depends_on:
+      postgres: {condition: service_healthy}
+  api:
+    build: ./backend
+    <<: *api
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    ports: ["127.0.0.1:18000:8000"]
+    healthcheck:
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://localhost:8000/ready',timeout=5)"]
+      interval: 5s
+      timeout: 6s
+      retries: 10
+  frontend:
+    build: ./frontend
+    ports: ["127.0.0.1:15173:80"]
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD","wget","-q","-O","/dev/null","http://127.0.0.1/"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+volumes:
+  pgdata:
+  redisdata:

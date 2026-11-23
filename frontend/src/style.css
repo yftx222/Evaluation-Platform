@@ -1,0 +1,105 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: #f2f5f8;
+  color: #172c40;
+  font:
+    16px system-ui,
+    sans-serif;
+}
+main {
+  max-width: 1200px;
+  margin: auto;
+  padding: 28px;
+}
+header,
+.row,
+nav {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+header {
+  justify-content: space-between;
+  border-bottom: 1px solid #cad6df;
+}
+h1 {
+  font-size: 26px;
+}
+h2 {
+  font-size: 22px;
+}
+h3 {
+  font-size: 17px;
+}
+.layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) 1fr;
+  gap: 24px;
+  margin: 24px 0;
+}
+section,
+aside,
+form {
+  background: white;
+  border: 1px solid #d6dfe5;
+  border-radius: 8px;
+  padding: 18px;
+}
+form {
+  margin: 16px 0;
+}
+aside {
+  align-self: start;
+}
+.project {
+  display: block;
+  width: 100%;
+  border: 0;
+  text-align: left;
+  background: #edf4f8;
+  padding: 12px;
+  margin: 8px 0;
+  cursor: pointer;
+}
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+  margin: 14px 0;
+}
+label {
+  display: grid;
+  gap: 6px;
+}
+input,
+select {
+  padding: 7px;
+  color: inherit;
+  border: 1px solid #aebec9;
+  border-radius: 4px;
+}
+input[type="checkbox"] {
+  justify-self: start;
+}
+.row {
+  border-top: 1px solid #d6dfe5;
+  padding: 10px 0;
+  flex-wrap: wrap;
+}
+output {
+  margin: 0 10px;
+}
+code {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 700px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  main {
+    padding: 12px;
+  }
+}
