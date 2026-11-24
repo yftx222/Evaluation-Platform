@@ -1,6 +1,7 @@
 import asyncio
 import json
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -200,14 +201,33 @@ async def publish(request: Request, p: UUID, db: Db, who: User, body: Publish) -
     if (cfg.kind, cfg.build) == ("http", "1"):
         raise Fault(422, "BUILD_RETIRED", "新 HTTP 版本请使用 build 2")
     adapter = registry.create(cfg, policy, request.app.state.secrets, project["slug"])
-    environment = None
+    environment: dict[str, Any] | None = None
     fingerprint = registry.digest(cfg.kind, cfg.build)
+    if body.customer_manifest is not None:
+        manifest = body.customer_manifest.model_dump(mode="json")
+        release = digest(manifest)
+        prefix = f"/releases/{release}"
+        endpoint = cfg.address(cfg.endpoint)
+        probe = cfg.address(cfg.probe_endpoint)
+        if (
+            (cfg.kind, cfg.build, cfg.method) != ("http", "2", "POST")
+            or not urlsplit(endpoint).path.endswith(prefix + "/agent-runs")
+            or probe != endpoint.removesuffix("agent-runs") + "ready"
+            or urlsplit(endpoint).query
+            or urlsplit(endpoint).fragment
+            or body.deployment_ref != manifest["customer_service_sha"]
+        ):
+            raise Fault(422, "INVALID_RELEASE", "版本清单需要绑定同一发布版本的客服执行与探测地址")
+        environment = {"manifest": manifest, "digest": release}
     async with asyncio.timeout(cfg.timeout_s):
         await policy.approve(cfg.address(cfg.endpoint))
         await policy.approve(cfg.address(cfg.probe_endpoint))
     if isinstance(adapter, ProfiledDataAgentAdapter):
         async with request.app.state.resources.target_permit(p, adapter.snapshot_timeout):
             environment = (await adapter.capture()).model_dump(mode="json")
+    elif body.customer_manifest is not None:
+        async with request.app.state.resources.target_permit(p, cfg.timeout_s):
+            await adapter.validate_connection()
     async with db.begin():
         await authorize(db, who, p, "A", lock=True)
         data = cfg.model_dump(exclude={"kind", "build", "secret_ref", "secret_version"})

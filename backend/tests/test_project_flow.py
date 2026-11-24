@@ -24,10 +24,76 @@ from pydantic import SecretStr
 
 from app.api.main import create_app
 from app.application.access.identity import DevelopmentIdentity, DevelopmentSecretResolver
+from app.application.catalog.store import digest
 from app.contracts.adapters import AdapterError, UnifiedRequest
 from app.contracts.http import AdapterConfig, TargetRule
 from app.infrastructure.resources import Settings
 from app.plugins.http_adapter import DestinationPolicy, registry
+from scripts.customer_release import publish
+
+
+def test_customer_release_freezes_and_reuses(environment: tuple[Settings, str, str, str]) -> None:
+    settings, admin, _, url = environment
+    settings.secrets["shop"] = {"facade": {"v1": SecretStr("test-only")}}
+    manifest: dict[str, Any] = dict(
+        customer_service_sha="a" * 40,
+        ai_service_sha="b" * 40,
+        model_provider="deepseek",
+        model_id="model-v1",
+        thinking_mode="disabled",
+        prompt_version="prompt-v1",
+        prompt_digest="c" * 64,
+        tools_skills_digest="d" * 64,
+        history_message_limit=30,
+        history_character_budget=12000,
+        fixture_version="test-orders",
+        fixture_digest="e" * 64,
+        profile="order-test",
+        principal="test-user",
+        role="customer",
+        business_mutation=False,
+    )
+    with TestClient(create_app(settings), base_url="http://testserver/api/v1/") as client:
+        client.headers["Authorization"] = "Bearer " + admin
+        created = client.post(
+            "projects",
+            json=dict(
+                slug="shop",
+                name="shop",
+                kind="agent",
+                max_parallel=2,
+                target_max_parallel=1,
+                rpm=100000,
+            ),
+        )
+        created.raise_for_status()
+        project = created.json()["data"]["id"]
+
+        def release(data: dict[str, Any]) -> dict[str, Any]:
+            return publish(
+                client, project, url, {"manifest": data, "digest": digest(data)}, "facade", "v1"
+            )
+
+        first = release(manifest)
+        assert release(manifest)["id"] == first["id"]
+        changed = release(dict(manifest, history_message_limit=18))
+        assert changed["id"] != first["id"]
+        versions = client.get(f"projects/{project}/versions").json()["data"]["items"]
+        assert len(versions) == 2
+        assert next(v for v in versions if v["id"] == first["id"])["environment"] == {
+            "manifest": manifest,
+            "digest": digest(manifest),
+        }
+        invalid = client.post(
+            f"projects/{project}/versions",
+            json=dict(
+                label="mismatched",
+                deployment_ref=manifest["customer_service_sha"],
+                customer_manifest=manifest,
+                adapter={"endpoint": url + "/predict", "probe_endpoint": url + "/ready"},
+            ),
+        )
+        assert invalid.status_code == 422 and invalid.json()["error"]["code"] == "INVALID_RELEASE"
 
 
 class Target(BaseHTTPRequestHandler):

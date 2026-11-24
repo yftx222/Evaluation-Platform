@@ -56,10 +56,34 @@ class KeyCreate(KeyExpiry):
     scopes: list[Scope] = Field(min_length=1, max_length=2)
 
 
+type Commit = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
+type Checksum = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+class CustomerManifest(Contract):
+    customer_service_sha: Commit
+    ai_service_sha: Commit
+    model_provider: Literal["deepseek", "openai_compatible", "qwen"]
+    model_id: Name
+    thinking_mode: Literal["disabled", "enabled"]
+    prompt_version: Name
+    prompt_digest: Checksum
+    tools_skills_digest: Checksum
+    history_message_limit: int = Field(ge=1, le=60)
+    history_character_budget: int = Field(ge=1)
+    fixture_version: Name
+    fixture_digest: Checksum
+    profile: Name
+    principal: Name
+    role: Literal["customer"]
+    business_mutation: Literal[False]
+
+
 class Publish(Contract):
     label: Name
     deployment_ref: Name
     adapter: AdapterConfig
+    customer_manifest: CustomerManifest | None = Field(default=None, exclude_if=lambda v: v is None)
     trace_capabilities: TraceCapabilities = Field(default_factory=TraceCapabilities)
 
     @model_validator(mode="after")
