@@ -281,7 +281,7 @@ def test_file_mapping_and_formula() -> None:
 def test_browser_catalog(catalog: tuple[Settings, dict[str, str]]) -> None:
     settings, tokens = catalog
     app = create_app(settings)
-    app.mount("/", StaticFiles(directory=Path("../frontend/dist"), html=True))
+    app.mount("/", StaticFiles(directory=Path("../frontend-ios/dist"), html=True))
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False))

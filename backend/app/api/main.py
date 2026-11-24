@@ -109,7 +109,11 @@ def create_app(
 
     @api.exception_handler(AdapterError)
     async def adapter_fault(request: Request, exc: AdapterError) -> JSONResponse:
-        return error(request, 422, exc.code, "接入配置不可用")
+        messages = {
+            "DATAAGENT_ENVIRONMENT_CHANGED": "环境已变化，请核对 DataAgent 项目版本。",
+            "DATAAGENT_ENVIRONMENT_UNAVAILABLE": "无法读取快照，请检查评测服务与权限。",
+        }
+        return error(request, 422, exc.code, messages.get(exc.code, "接入配置不可用"))
 
     @api.exception_handler(TimeoutError)
     async def timeout(request: Request, exc: TimeoutError) -> JSONResponse:

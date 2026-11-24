@@ -37,6 +37,7 @@ class Wire:
     attempt: UUID | None = None
     trace_token: str | None = field(default=None, repr=False)
     trace_id: UUID | None = None
+    renew_trace: Callable[[], Awaitable[str]] | None = field(default=None, repr=False)
     connect_failed: bool = False
     started: bool = False
     status: int | None = None

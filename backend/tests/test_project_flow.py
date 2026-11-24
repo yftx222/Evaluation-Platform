@@ -295,7 +295,7 @@ def test_project_lifecycle(environment: tuple[Settings, str, str, str]) -> None:
 def test_browser_project_release(environment: tuple[Settings, str, str, str]) -> None:
     settings, admin, _, url = environment
     app = create_app(settings)
-    app.mount("/", StaticFiles(directory=Path("../frontend/dist"), html=True), name="console")
+    app.mount("/", StaticFiles(directory=Path("../frontend-ios/dist"), html=True), name="console")
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]

@@ -18,19 +18,28 @@ class AttemptTraceIssuer(TraceWriteIssuer):
     def __init__(self, resources: Resources) -> None:
         self.resources = resources
 
-    async def issue(self, scope: TraceWriteScope, deadline: datetime) -> str:
+    async def issue(
+        self, scope: TraceWriteScope, deadline: datetime, *, previous: str | None = None
+    ) -> str:
         bound = " AND a.trace_id=:trace_id" if isinstance(scope, BoundTraceWriteScope) else ""
+        rotation = (
+            " AND a.trace_verifier=:previous AND a.trace_expires_at>clock_timestamp() "
+            "AND EXISTS (SELECT 1 FROM traces t WHERE t.id=a.trace_id AND t.status='OPEN')"
+            if previous is not None
+            else ""
+        )
         token = f"{scope.attempt_id}.{secrets.token_urlsafe(32)}"
         async with self.resources.transaction() as db:
             issued = await db.scalar(
                 text(f"""UPDATE execution_attempts a SET trace_verifier=:hash,
                 trace_expires_at=least(:deadline,clock_timestamp()+interval '5 minutes')
-                FROM case_executions c,evaluation_runs r WHERE {SCOPE}{bound}
+                FROM case_executions c,evaluation_runs r WHERE {SCOPE}{bound}{rotation}
                 AND :deadline>clock_timestamp() RETURNING a.id"""),
                 {
                     **scope.model_dump(),
                     "hash": hashlib.sha256(token.encode()).hexdigest(),
                     "deadline": deadline,
+                    "previous": hashlib.sha256((previous or "").encode()).hexdigest(),
                 },
             )
             if issued is None:

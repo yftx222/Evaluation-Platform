@@ -22,6 +22,7 @@ from app.contracts.runs import ExecutionPolicy
 from app.contracts.traces import BoundTraceWriteScope
 from app.infrastructure.attempt_http import Wire, observe
 from app.infrastructure.resources import Resources, Settings
+from app.plugins.dataagent_profile import ProfiledDataAgentAdapter
 from app.plugins.http_adapter import DestinationPolicy, registry
 from app.plugins.judge import CompatibleJudge
 from app.worker.retry import QUOTA_ERRORS, delay, quota_delay
@@ -248,6 +249,8 @@ class CaseRunner:
             self.secrets,
             slug,
         )
+        if isinstance(adapter, ProfiledDataAgentAdapter):
+            adapter.pinned_digest = (version.get("environment") or {}).get("digest")
         assert lease.attempt is not None
         request = UnifiedRequest(
             run_id=lease.run,
@@ -261,7 +264,12 @@ class CaseRunner:
             idempotency_key=wire.key,
             deadline_at=deadline,
         )
-        async with resources.target_permit(lease.project, cfg.timeout_s):
+        permit_seconds = (
+            (deadline - datetime.now(UTC)).total_seconds()
+            if cfg.kind == "dataagent"
+            else cfg.timeout_s
+        )
+        async with resources.target_permit(lease.project, permit_seconds):
             destination = urlsplit(cfg.address(cfg.endpoint))
             trace_transport = destination.scheme == "https" or (
                 self.settings.mode == "development" and destination.hostname in ("127.0.0.1", "::1")
@@ -283,6 +291,14 @@ class CaseRunner:
                     epoch=lease.epoch,
                 )
                 wire.trace_token = await AttemptTraceIssuer(resources).issue(scope, deadline)
+                if cfg.kind == "dataagent" and cfg.build in {"2", "3"}:
+
+                    async def renew_trace() -> str:
+                        return await AttemptTraceIssuer(resources).issue(
+                            scope, deadline, previous=wire.trace_token or ""
+                        )
+
+                    wire.renew_trace = renew_trace
             prediction = await adapter.execute(request)
             if version.get("trace_capabilities"):
                 incoming = embedded.detach(prediction, slug, cfg.kind)

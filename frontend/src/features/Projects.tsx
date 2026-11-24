@@ -21,6 +21,7 @@ type Row = {
   deployment_ref?: string;
   build?: string;
   trace_capabilities?: Record<string,unknown> | null;
+  environment?: Record<string,unknown> | null;
   prefix?: string;
   revoked_at?: string;
   expires_at?: string;
@@ -472,8 +473,9 @@ function Details({
                     )}
                   />
                   <small>
-                    默认填写 <code>{"{}"}</code>{" "}
-                    即可使用标准字段。自定义字段见下方说明。
+                    {plugin.kind === "dataagent"
+                      ? "role 填专用账号绑定的 Doris 只读角色，fixture_version 填本次使用的测试数据版本。"
+                      : <>默认填写 <code>{"{}"}</code> 即可使用标准字段。自定义字段见下方说明。</>}
                   </small>
                 </label>
               )}
@@ -483,16 +485,16 @@ function Details({
                   <pre>{JSON.stringify(plugin.config_schema, null, 2)}</pre>
                 </details>
               )}
-              <details>
+              {plugin?.kind === "dataagent" && plugin.build === "1" ? <p>DataAgent D1 关闭轨迹采集。</p> : <details>
                 <summary>执行轨迹采集方式</summary>
                 <label>采集能力（可选 JSON）
                   <textarea name="trace_capabilities" placeholder={'{"mode":"embedded","event_types":["MODEL_CALL","FINAL_OUTPUT"],"required_events":["FINAL_OUTPUT"]}'} />
                 </label>
                 <small>留空使用协议的回调模式。内嵌事件用 embedded，关闭用 disabled。能力随版本固定。</small>
-              </details>
+              </details>}
               <Input name="headers" label="请求头 JSON" initial="{}" />
-              <Input name="secret_ref" label="密钥引用" optional />
-              <Input name="secret_version" label="密钥版本" optional />
+              <Input name="secret_ref" label="密钥引用" optional={plugin?.kind !== "dataagent"} />
+              <Input name="secret_version" label="密钥版本" optional={plugin?.kind !== "dataagent"} />
             </Editor>
           )}
           <h3>已发布版本</h3>
@@ -500,6 +502,8 @@ function Details({
             <div className="row" key={v.id}>
               <div>
                 {v.label} · {v.deployment_ref} · {v.kind} / {v.build}
+                {v.environment && <details><summary>发布时的评测环境</summary>
+                  <pre>{JSON.stringify(v.environment,null,2)}</pre></details>}
                 {v.trace_capabilities && <details><summary>已发布的采集能力</summary>
                   <pre>{JSON.stringify(v.trace_capabilities,null,2)}</pre></details>}
               </div>

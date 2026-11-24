@@ -93,7 +93,8 @@ async def snapshot(
     pv = await row(
         db,
         """SELECT v.id,v.label,v.deployment_ref,v.digest,v.adapter_id,v.trace_capabilities,
-                 a.digest AS adapter_digest,p.slug,p.enabled FROM project_versions v
+                 a.digest AS adapter_digest,a.config->'_environment' AS environment,
+                 p.slug,p.enabled FROM project_versions v
                  JOIN project_adapters a ON a.id=v.adapter_id JOIN projects p ON p.id=v.project_id
                  WHERE v.id=:v AND p.id=:p FOR SHARE OF p""",
         v=body.project_version_id,
@@ -101,6 +102,8 @@ async def snapshot(
     )
     if not pv.pop("enabled"):
         raise Fault(409, "PROJECT_DISABLED", "项目已停用")
+    if pv["environment"] is None:
+        pv.pop("environment")
     dv = await row(
         db,
         """SELECT v.id,v.dataset_id,v.version,v.digest,v.state,d.archived,

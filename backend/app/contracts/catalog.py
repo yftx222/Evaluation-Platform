@@ -64,6 +64,29 @@ class Publish(Contract):
 
     @model_validator(mode="after")
     def protocol_defaults(self) -> Self:
+        if self.adapter.kind == "dataagent" and self.adapter.build in {"2", "3"}:
+            if self.trace_capabilities.mode == "embedded":
+                raise ValueError("此 DataAgent 版本支持 callback 或 disabled")
+            if "trace_capabilities" not in self.model_fields_set:
+                self.trace_capabilities = TraceCapabilities(
+                    event_types=[
+                        "AGENT_STEP",
+                        "MODEL_CALL",
+                        "TOOL_CALL",
+                        "RETRIEVAL",
+                        "FINAL_OUTPUT",
+                        "CUSTOM",
+                    ],
+                    required_events=["FINAL_OUTPUT"],
+                    retrieval_refs=False,
+                )
+        if self.adapter.kind == "dataagent" and self.adapter.build == "1":
+            if (
+                "trace_capabilities" in self.model_fields_set
+                and self.trace_capabilities.mode != "disabled"
+            ):
+                raise ValueError("DataAgent D1 仅支持关闭轨迹采集")
+            self.trace_capabilities = TraceCapabilities(mode="disabled", event_types=[])
         if (
             "trace_capabilities" not in self.model_fields_set
             and self.adapter.kind == "openai_compatible"

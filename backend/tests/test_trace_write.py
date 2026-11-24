@@ -167,6 +167,58 @@ def window(catalog: tuple[Settings, dict[str, str]]) -> Iterator[Window]:
         yield asyncio.run(issue())
 
 
+def test_rotate_only_live_credential(window: Window) -> None:
+    lease = window.lease
+    assert lease.attempt is not None
+    scope = BoundTraceWriteScope(
+        project_id=lease.project,
+        run_id=lease.run,
+        execution_id=lease.case,
+        attempt_id=lease.attempt,
+        epoch=lease.epoch,
+        trace_id=window.trace,
+    )
+
+    async def check() -> None:
+        resources = Resources(window.settings)
+        issuer = AttemptTraceIssuer(resources)
+        deadline = datetime.now(UTC) + timedelta(minutes=10)
+        try:
+            old = window.token
+            fresh = await issuer.issue(scope, deadline, previous=old)
+            assert not await issuer.valid(scope, old) and await issuer.valid(scope, fresh)
+            with pytest.raises(ValueError):
+                await issuer.issue(scope, deadline, previous=old)
+            with pytest.raises(ValueError):
+                await issuer.issue(
+                    scope.model_copy(update={"epoch": scope.epoch + 1}), deadline, previous=fresh
+                )
+            async with resources.transaction() as db:
+                await db.execute(
+                    text(
+                        "UPDATE execution_attempts SET trace_expires_at=clock_timestamp() "
+                        "WHERE id=:a"
+                    ),
+                    {"a": scope.attempt_id},
+                )
+            with pytest.raises(ValueError):
+                await issuer.issue(scope, deadline, previous=fresh)
+            async with resources.transaction() as db:
+                await db.execute(
+                    text(
+                        "UPDATE case_executions SET lease_expires_at=lease_expires_at WHERE id=:c"
+                    ),
+                    {"c": scope.execution_id},
+                )
+            with pytest.raises(ValueError):
+                await issuer.issue(scope, deadline, previous=fresh)
+        finally:
+            await resources.close()
+
+    asyncio.run(check())
+    assert window.api.get(window.url).json()["data"]["status"] == "MISSING"
+
+
 def test_trace_atomic_order_and_replay(window: Window, caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="uvicorn.error")
     w = window

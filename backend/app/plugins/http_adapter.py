@@ -26,6 +26,7 @@ from app.contracts.adapters import (
 )
 from app.contracts.http import AdapterConfig, TargetRule
 from app.infrastructure import attempt_http as httpx
+from app.plugins import dataagent, dataagent_profile, dataagent_trace
 from app.plugins.adapter_protocols import (
     AgentMapping,
     AgentOptions,
@@ -348,7 +349,34 @@ class AdapterRegistry:
         )
 
 
-registry = AdapterRegistry()
+class PlatformAdapterRegistry(AdapterRegistry):
+    """Multi-request protocols own their transport; existing HTTP builds stay frozen."""
+
+    def create(
+        self,
+        config: AdapterConfig,
+        policy: DestinationPolicy,
+        resolver: SecretResolver,
+        project: str,
+    ) -> BaseAdapter:
+        standard = super().create(config, policy, resolver, project)
+        if config.kind == "dataagent":
+            if config.build == "3":
+                return dataagent_profile.ProfiledDataAgentAdapter(config, policy, resolver, project)
+            if config.build == "2":
+                return dataagent_trace.TracedDataAgentAdapter(config, policy, resolver, project)
+            return dataagent.DataAgentEvaluationAdapter(config, policy, resolver, project)
+        return standard
+
+
+registry: AdapterRegistry = PlatformAdapterRegistry()
+dataagent_plugin = Implementation(
+    dataagent.DataMapping,
+    dataagent.Options,
+    ("turns",),
+    ("execute", "multi_turn", "artifacts"),
+    {"role": "dataagent_eval_d1", "fixture_version": "mfg-service-demo-v1"},
+)
 http_mapping = Implementation(Mapping, HTTPOptions, ("request_map",), ("execute",), {})
 # Frozen baseline for snapshots published before implementation digests were stored.
 LEGACY_RELEASES = {
@@ -377,4 +405,38 @@ registry.register(
         AgentMapping, AgentOptions, ("query | messages",), ("execute", "embedded_events"), {}
     ),
     release_digest=LEGACY_RELEASES["agent", "1"],
+)
+registry.register(
+    "dataagent",
+    "1",
+    dataagent_plugin,
+    release_digest="e364fc5e1c3049532cbd042e096c9421874b672333df49224fa58a33baa31686",
+)
+traced_dataagent = Implementation(
+    dataagent.DataMapping,
+    dataagent.Options,
+    ("turns",),
+    (*dataagent_plugin.capabilities, "callback"),
+    dataagent_plugin.example,
+    (dataagent_trace,),
+)
+registry.register(
+    "dataagent",
+    "2",
+    traced_dataagent,
+    release_digest="8a8bf914622650a63100e1954d0d7e12515365b05d8fb75bfc374cda57813ee4",
+)
+profiled_dataagent = Implementation(
+    dataagent.DataMapping,
+    dataagent.Options,
+    ("turns",),
+    (*traced_dataagent.capabilities, "environment_snapshot"),
+    dataagent_plugin.example,
+    (dataagent_trace, dataagent_profile),
+)
+registry.register(
+    "dataagent",
+    "3",
+    profiled_dataagent,
+    release_digest="6910d333053ebb3fc5c2b8c76596607202a9864fd129d0d17c9ad0a24afca6d4",
 )
