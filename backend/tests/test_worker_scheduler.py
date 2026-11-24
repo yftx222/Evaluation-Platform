@@ -18,7 +18,7 @@ from app.api.main import create_app
 from app.contracts.evaluators import JudgeAccount
 from app.contracts.http import TargetRule
 from app.infrastructure.resources import Resources, Settings
-from app.worker.scheduler import Lease, claim, renew
+from app.worker.scheduler import Lease, claim, initialize, release, renew
 from app.worker.settings import WorkerSettings
 
 
@@ -189,6 +189,53 @@ async def wait_rows(
 LIVE = """SELECT c.id,c.lease_owner,c.lease_epoch,c.run_id,c.lease_expires_at,r.project_id
         FROM case_executions c JOIN evaluation_runs r ON r.id=c.run_id
         WHERE c.status='RUNNING' AND c.lease_expires_at>clock_timestamp()"""
+
+
+def test_waiting_case_keeps_other_samples_unstarted(
+    workload: tuple[Settings, TestClient, dict[str, str]],
+) -> None:
+    settings, api, tasks = workload
+    run = launch(api, tasks["shop"])  # 120 samples, one admitted case at a time.
+
+    async def exercise() -> None:
+        resources = Resources(settings)
+        cfg = WorkerSettings(id="first")
+        try:
+            await initialize(resources, cfg)
+            first = await claim(resources, cfg)
+            assert first and first.run == run and await release(resources, first)
+            async with resources.transaction() as db:
+                await db.execute(
+                    text("""UPDATE case_executions SET next_retry_at=now()+interval '1 hour'
+                            WHERE id=:id"""),
+                    {"id": first.case},
+                )
+            competitor = WorkerSettings(id="second")
+            assert await claim(resources, competitor) is None
+            other_run = launch(api, tasks["rag"])
+            other = await claim(resources, competitor)
+            assert other and other.run == other_run
+            async with resources.transaction() as db:
+                assert (
+                    await db.scalar(
+                        text(
+                            "SELECT count(*) FROM case_executions "
+                            "WHERE run_id=:r AND started_at IS NULL"
+                        ),
+                        {"r": run},
+                    )
+                    == 119
+                )
+                await db.execute(
+                    text("UPDATE case_executions SET next_retry_at=now() WHERE id=:id"),
+                    {"id": first.case},
+                )
+            resumed = await claim(resources, competitor)
+            assert resumed and resumed.case == first.case and resumed.epoch > first.epoch
+        finally:
+            await resources.close()
+
+    asyncio.run(exercise())
 
 
 def test_real_workers_quota_fairness(workload: tuple[Settings, TestClient, dict[str, str]]) -> None:
