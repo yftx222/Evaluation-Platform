@@ -72,7 +72,7 @@ services:
     depends_on:
       migrate: {condition: service_completed_successfully}
   frontend:
-    build: ./frontend
+    build: ./frontend-ios
     ports: ["127.0.0.1:15173:80"]
     depends_on:
       api: {condition: service_healthy}

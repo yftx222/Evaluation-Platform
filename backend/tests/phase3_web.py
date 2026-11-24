@@ -7,4 +7,4 @@ from fastapi.staticfiles import StaticFiles
 from app.api.main import create_app
 
 api = create_app()
-api.mount("/", StaticFiles(directory=Path("../frontend/dist"), html=True), name="console")
+api.mount("/", StaticFiles(directory=Path("../frontend-ios/dist"), html=True), name="console")
