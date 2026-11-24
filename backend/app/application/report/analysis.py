@@ -120,7 +120,7 @@ SIGNALS = {
     "low_score": "min_score<:threshold",
     "child_failed": "child_failed",
     "trace_partial": "trace_status='PARTIAL'",
-    "trace_missing": "CAST(:collect AS boolean) AND trace_status='MISSING'",
+    "trace_missing": "trace_status='MISSING'",
     "token_limit": "total_tokens>:tokens",
     "latency_limit": "case_ms>:ms",
     "new_failure": "new_failure",
@@ -136,8 +136,7 @@ def case_query(
     args = {
         **params(r, snap),
         "threshold": threshold,
-        "collect": (snap["project_version"].get("trace_capabilities") or {}).get("mode")
-        != "disabled",
+        "signal": signal,
         "base": baseline,
         "tokens": cfg.get("max_case_tokens"),
         "ms": cfg.get("max_case_ms"),
@@ -155,19 +154,14 @@ def case_query(
     flags = ", ".join(
         f"CASE WHEN {condition} THEN '{name}' END" for name, condition in SIGNALS.items()
     )
-    if signal == "all":
-        where = "true"
-    elif signal == "any":
-        where = "bad OR cardinality(array_remove(reasons,'fixed'))>0"
-    else:
-        where = ":signal=ANY(reasons)"
-        args["signal"] = signal
     return (
         with_pairs
         + f""", flagged AS (SELECT c.*,array_remove(ARRAY[{flags}],NULL) reasons
       FROM classified c) SELECT id execution_id,case_key,status,trace_id,trace_status,
       case_ms,input_tokens,output_tokens,judge_tokens,total_tokens,min_score,errors,failed_scores,
-      attempt_count,reasons,baseline_execution FROM flagged WHERE {where} ORDER BY id""",
+      attempt_count,reasons,baseline_execution FROM flagged WHERE CASE CAST(:signal AS text)
+        WHEN 'all' THEN true WHEN 'any' THEN bad OR cardinality(array_remove(reasons,'fixed'))>0
+        ELSE :signal=ANY(reasons) END ORDER BY id""",
         args,
     )
 

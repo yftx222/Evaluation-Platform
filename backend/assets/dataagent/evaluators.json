@@ -1,0 +1,22 @@
+[
+  {
+    "catalog": {"slug":"dataagent-final-answer","name":"DataAgent 最终回答交付","kind":"rule"},
+    "release": {
+      "version":"v1","impl_key":"rules","build":"95ae95579232160a68b408b5f3a1bc7c0f1e282a94a673057fa63a9e558e481b",
+      "config":{"threshold":1,"rules":[
+        {"path":"answer","op":"nonempty","reason":"缺少最终回答正文"},
+        {"path":"structured_output.status","op":"exact","expected":"finished","reason":"未观察到回合完成"},
+        {"path":"structured_output.role","op":"exact","expected":"assistant","reason":"缺少助手的最终消息"}
+      ]}
+    }
+  },
+  {
+    "catalog": {"slug":"dataagent-pilot-answer-rubric","name":"DataAgent 电商试点答案正确性","kind":"llm_judge"},
+    "release": {
+      "version":"v1","impl_key":"chat_judge","build":"95ae95579232160a68b408b5f3a1bc7c0f1e282a94a673057fa63a9e558e481b","provider":"openai_compatible",
+      "model_id":"deepseek-flash","prompt_version":"pilot-answer-v1","rubric_version":"pilot-202609-v1",
+      "prompt_text":"依据最后一轮问题、参考答案、scorecard 和 rubric，只判定最终回答文本。逐项核对问题所要求的值、符号、单位、时段、适用范围，以及题目要求的分子分母、澄清后的口径或不可计算的结论。等价格式和相同精度的四舍五入可接受。正确且完整给 1；错误、缺项、与结论矛盾或用无数据当零给 0。总分及唯一维度均取该值。不要从最终文本猜测 SQL 是否真的执行、首轮是否澄清、附件是否交付或权限是否正确，这些需要独立证据。",
+      "config":{"provider_account_id":"deepseek-ecommerce","secret_ref":"judge-api","secret_version":"v1","temperature":0,"timeout_s":30,"threshold":1,"dimensions":["答案正确性"]}
+    }
+  }
+]

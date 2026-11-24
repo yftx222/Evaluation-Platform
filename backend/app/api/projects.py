@@ -1,6 +1,7 @@
 import asyncio
 import json
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -12,6 +13,7 @@ from app.application.catalog.store import Fault, audit, digest, page, row, versi
 from app.contracts.adapters import AdapterError, Contract
 from app.contracts.catalog import Kind, ProjectCreate, ProjectPatch, Publish
 from app.contracts.http import AdapterConfig
+from app.plugins.dataagent_profile import ProfiledDataAgentAdapter
 from app.plugins.http_adapter import DestinationPolicy, registry
 
 router = APIRouter(prefix="/api/v1")
@@ -159,7 +161,8 @@ async def permissions(request: Request, p: UUID, db: Db, who: User) -> dict[str,
 
 
 VERSION = """SELECT v.id,v.project_id,v.label,v.deployment_ref,v.digest,v.created_at,
-    v.trace_capabilities,a.kind,a.build,a.digest AS adapter_digest FROM project_versions v
+    v.trace_capabilities,a.kind,a.build,a.digest AS adapter_digest,
+    a.config->'_environment' AS environment FROM project_versions v
     JOIN project_adapters a ON a.id=v.adapter_id WHERE v.project_id=:p"""
 
 
@@ -197,15 +200,42 @@ async def publish(request: Request, p: UUID, db: Db, who: User, body: Publish) -
     cfg = body.adapter
     if (cfg.kind, cfg.build) == ("http", "1"):
         raise Fault(422, "BUILD_RETIRED", "新 HTTP 版本请使用 build 2")
-    registry.create(cfg, policy, request.app.state.secrets, project["slug"])
+    adapter = registry.create(cfg, policy, request.app.state.secrets, project["slug"])
+    environment: dict[str, Any] | None = None
     fingerprint = registry.digest(cfg.kind, cfg.build)
+    if body.customer_manifest is not None:
+        manifest = body.customer_manifest.model_dump(mode="json")
+        release = digest(manifest)
+        prefix = f"/releases/{release}"
+        endpoint = cfg.address(cfg.endpoint)
+        probe = cfg.address(cfg.probe_endpoint)
+        if (
+            (cfg.kind, cfg.build, cfg.method) != ("http", "2", "POST")
+            or not urlsplit(endpoint).path.endswith(prefix + "/agent-runs")
+            or probe != endpoint.removesuffix("agent-runs") + "ready"
+            or urlsplit(endpoint).query
+            or urlsplit(endpoint).fragment
+            or body.deployment_ref != manifest["customer_service_sha"]
+        ):
+            raise Fault(422, "INVALID_RELEASE", "版本清单需要绑定同一发布版本的客服执行与探测地址")
+        environment = {"manifest": manifest, "digest": release}
     async with asyncio.timeout(cfg.timeout_s):
         await policy.approve(cfg.address(cfg.endpoint))
         await policy.approve(cfg.address(cfg.probe_endpoint))
+    if isinstance(adapter, ProfiledDataAgentAdapter):
+        async with request.app.state.resources.target_permit(p, adapter.snapshot_timeout):
+            environment = (await adapter.capture()).model_dump(mode="json")
+    elif body.customer_manifest is not None:
+        async with request.app.state.resources.target_permit(p, cfg.timeout_s):
+            await adapter.validate_connection()
     async with db.begin():
         await authorize(db, who, p, "A", lock=True)
         data = cfg.model_dump(exclude={"kind", "build", "secret_ref", "secret_version"})
         data["_implementation_digest"] = fingerprint
+        binding = [fingerprint]
+        if environment:
+            data["_environment"] = environment
+            binding.append(environment["digest"])
         a = await row(
             db,
             """INSERT INTO project_adapters(project_id,revision,kind,build,config,
@@ -218,7 +248,7 @@ async def publish(request: Request, p: UUID, db: Db, who: User, body: Publish) -
             cfg=json.dumps(data),
             ref=cfg.secret_ref,
             ver=cfg.secret_version,
-            digest=digest([cfg.model_dump(), fingerprint]),
+            digest=digest([cfg.model_dump(), *binding]),
         )
         v = await row(
             db,
@@ -230,7 +260,7 @@ async def publish(request: Request, p: UUID, db: Db, who: User, body: Publish) -
             trace=body.trace_capabilities.model_dump_json(),
             label=body.label,
             ref=body.deployment_ref,
-            digest=digest([body.model_dump(), fingerprint]),
+            digest=digest([body.model_dump(), *binding]),
         )
         await record(
             request,
@@ -264,8 +294,14 @@ async def probe(request: Request, p: UUID, db: Db, who: User, body: Probe) -> di
         cfg = await version_adapter_config(db, p, body.version_id)
     slug = project["slug"]
     adapter = registry.create(cfg, policy_for(request, slug), request.app.state.secrets, slug)
+    timeout = cfg.timeout_s
+    if isinstance(adapter, ProfiledDataAgentAdapter):
+        timeout = adapter.snapshot_timeout
+        if body.version_id:
+            saved = await row(db, VERSION + " AND v.id=:id", p=p, id=body.version_id)
+            adapter.pinned_digest = saved["environment"]["digest"]
     await db.commit()
-    async with request.app.state.resources.target_permit(p, cfg.timeout_s):
+    async with request.app.state.resources.target_permit(p, timeout):
         try:
             result = await adapter.validate_connection()
         except AdapterError as exc:

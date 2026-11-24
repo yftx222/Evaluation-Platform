@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.catalog.store import digest, row
 from app.application.runner import runs
 from app.contracts.reports import Dimension
+from app.contracts.traces import TraceCapabilities
 
 # At most one row per execution. Usage from a complete trace is a fallback only.
 FACTS = """WITH scores AS (
@@ -31,7 +32,7 @@ FACTS = """WITH scores AS (
 ), selected AS (
  SELECT c.id,c.case_id,c.status,c.attempt_count,s.case_key,s.category,s.difficulty,s.tags,
  extract(epoch FROM c.finished_at-c.started_at)*1000 AS case_ms,c.latency_ms AS adapter_ms,
- t.id trace_id,t.status trace_status,coalesce(g.errors,0) errors,
+ t.id trace_id,coalesce(t.status,'NOT_COLLECTED') trace_status,coalesce(g.errors,0) errors,
  coalesce(g.ok,0) ok,coalesce(g.failed_scores,0) failed_scores,g.min_score,
  coalesce(g.child_failed,false) child_failed,
  CASE WHEN coalesce(g.judge_measured,0)=:judges THEN coalesce(g.judge_tokens,0) END judge_tokens,
@@ -41,7 +42,7 @@ FACTS = """WITH scores AS (
  LEFT JOIN scores g ON g.execution_id=c.id
  LEFT JOIN LATERAL (SELECT id,status FROM traces t WHERE t.run_id=c.run_id AND t.execution_id=c.id
  ORDER BY (t.attempt_id=c.prediction_attempt_id) DESC NULLS LAST,t.created_at DESC,t.id LIMIT 1)t
- ON true WHERE c.run_id=:r
+ ON CAST(:collect AS boolean) WHERE c.run_id=:r
 ), model_events AS (
  SELECT t.trace_id, count(*) n,count(i) ni,count(o) no,sum(i) ins,sum(o) outs
  FROM selected t JOIN trace_events e ON e.trace_id=t.trace_id AND e.event_type='MODEL_CALL'
@@ -67,6 +68,8 @@ def params(run_id: UUID, snap: dict[str, Any]) -> dict[str, Any]:
     return {
         "r": run_id,
         "planned": len(plan),
+        "collect": (snap["project_version"].get("trace_capabilities") or {}).get("mode", "callback")
+        != "disabled",
         "judges": sum(n["impl_key"] == "chat_judge" for n in plan),
         "children": list({UUID(m["child_version_id"]) for n in plan for m in n["members"]}),
     }
@@ -96,7 +99,7 @@ async def summary(db: AsyncSession, r: UUID, snap: dict[str, Any]) -> dict[str, 
       count(*) FILTER(WHERE trace_status='COMPLETE') complete,
       count(*) FILTER(WHERE trace_status='PARTIAL') partial,
       count(*) FILTER(WHERE trace_status='MISSING') missing,
-      count(*) FILTER(WHERE trace_status IS NULL) not_collected
+      count(*) FILTER(WHERE trace_status='NOT_COLLECTED') not_collected
       FROM facts""",
         **params(r, snap),
     )
@@ -125,11 +128,11 @@ async def summary(db: AsyncSession, r: UUID, snap: dict[str, Any]) -> dict[str, 
         else None
     )
     overview.update(totals)
-    caps = snap["project_version"].get("trace_capabilities") or {}
-    overview["trace_complete_rate"] = (
-        runs.ratio(0, 0)
-        if caps.get("mode") == "disabled"
-        else runs.ratio(totals["complete"], total)
+    overview["trace_mode"] = (snap["project_version"].get("trace_capabilities") or {}).get(
+        "mode", "callback"
+    )
+    overview["trace_complete_rate"] = runs.ratio(
+        totals["complete"], total - totals["not_collected"]
     )
     versions = await rows(
         db,
@@ -249,6 +252,11 @@ async def groups(
 
 def conditions(snap: dict[str, Any]) -> dict[str, Any]:
     nodes = snap["evaluator_plan"]
+    capability = TraceCapabilities.model_validate(
+        snap["project_version"].get("trace_capabilities") or {}
+    ).model_dump()
+    for key in ("event_types", "required_events"):
+        capability[key] = sorted(capability[key])
     return {
         "project_id": snap["project_id"],
         "project_version": snap["project_version"]["id"],
@@ -281,5 +289,5 @@ def conditions(snap: dict[str, Any]) -> dict[str, Any]:
             **{k: v for k, v in snap["policy"].items() if k != "approved_policy_ids"},
             "approved_policy_digest": digest(snap["policy"].get("approved_policy_ids", [])),
         },
-        "trace_capabilities": snap["project_version"].get("trace_capabilities"),
+        "trace_capabilities": capability,
     }

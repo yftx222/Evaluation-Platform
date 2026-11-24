@@ -20,7 +20,7 @@ jobs:
           uv run ruff format --check app migrations tests dev_identity.py
           uv run --group test mypy
       - name: Frontend checks
-        working-directory: frontend
+        working-directory: frontend-ios
         run: |
           npm ci
           npm run typecheck

@@ -28,6 +28,10 @@ def services() -> Settings:
 
 @pytest.fixture
 def clean_db(services: Settings) -> Iterator[str]:
+    yield from disposable_db(services)
+
+
+def disposable_db(services: Settings) -> Iterator[str]:
     url = make_url(services.database_url.get_secret_value())
     assert url.host == "127.0.0.1"
     name = "acceptance_" + uuid4().hex

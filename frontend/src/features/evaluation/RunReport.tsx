@@ -41,6 +41,7 @@ type Summary = {
   partial: number;
   missing: number;
   not_collected: number;
+  trace_mode: "disabled" | "callback" | "embedded";
   trace_complete_rate: Ratio;
   tokens_p50: number | null;
   tokens_p95: number | null;
@@ -530,7 +531,8 @@ export default function RunReport({
       <h4>轨迹与耗时</h4>
       <p>
         完整 {s.complete} · 部分缺失 {s.partial} · 缺失 {s.missing} · 未采集{" "}
-        {s.not_collected} · 完整率 <Rate v={s.trace_complete_rate} />
+        {s.not_collected} · 采集方式 {({ disabled: "关闭", callback: "回调", embedded: "响应内嵌" })[s.trace_mode]} · 完整率{" "}
+        {s.trace_complete_rate.denominator ? <Rate v={s.trace_complete_rate} /> : "不适用（0/0）"}
       </p>
       <p>
         执行尝试 {report.process.attempts} · 重试 {report.process.retries} ·

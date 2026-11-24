@@ -1,0 +1,212 @@
+[
+  {
+    "action": "receive",
+    "method": "POST",
+    "path": "/api/v1/quality-events",
+    "request_file": "feedback.json",
+    "status": 202,
+    "body": {
+      "data": {
+        "event_id": "437e9859-996a-49d0-b99b-f64ab07f30b9",
+        "status": "RECEIVED",
+        "received_at": "2026-11-24T01:05:03Z"
+      },
+      "request_id": "request-1"
+    }
+  },
+  {
+    "action": "retry",
+    "method": "POST",
+    "path": "/api/v1/quality-events",
+    "request_file": "feedback.json",
+    "status": 202,
+    "body": {
+      "data": {
+        "event_id": "437e9859-996a-49d0-b99b-f64ab07f30b9",
+        "status": "RECEIVED",
+        "received_at": "2026-11-24T01:05:03Z"
+      },
+      "request_id": "request-2"
+    }
+  },
+  {
+    "action": "lookup",
+    "method": "GET",
+    "path": "/api/v1/quality-events/437e9859-996a-49d0-b99b-f64ab07f30b9",
+    "status": 200,
+    "body": {
+      "data": {
+        "event_id": "437e9859-996a-49d0-b99b-f64ab07f30b9",
+        "status": "RECEIVED",
+        "received_at": "2026-11-24T01:05:03Z"
+      },
+      "request_id": "request-3"
+    }
+  },
+  {
+    "action": "conflict",
+    "method": "POST",
+    "path": "/api/v1/quality-events",
+    "request_file": "feedback.json",
+    "replace": {
+      "/payload/comment": "另一条反馈"
+    },
+    "status": 409,
+    "body": {
+      "error": {
+        "code": "EVENT_ID_CONFLICT",
+        "message": "同一事件编号的内容不同",
+        "retryable": false
+      },
+      "request_id": "request-4"
+    }
+  },
+  {
+    "action": "outside_scope",
+    "method": "POST",
+    "path": "/api/v1/quality-events",
+    "request_file": "feedback.json",
+    "authorized_environment": "staging",
+    "status": 403,
+    "body": {
+      "error": {
+        "code": "SCOPE_DENIED",
+        "message": "当前身份没有目标环境的写权限",
+        "retryable": false
+      },
+      "request_id": "request-5"
+    }
+  },
+  {
+    "action": "trace_missing",
+    "method": "GET",
+    "path": "/api/v1/production-traces/ab3b1e74-dfe9-47b3-8092-bf2aca93fd75",
+    "status": 404,
+    "body": {
+      "error": {
+        "code": "NOT_FOUND",
+        "message": "无可见执行记录",
+        "retryable": false
+      },
+      "request_id": "request-6"
+    }
+  },
+  {
+    "action": "trace_partial",
+    "method": "GET",
+    "path": "/api/v1/production-traces/ab3b1e74-dfe9-47b3-8092-bf2aca93fd75",
+    "status": 200,
+    "body": {
+      "data": {
+        "trace_id": "ab3b1e74-dfe9-47b3-8092-bf2aca93fd75",
+        "completeness": "PARTIAL",
+        "availability": "AVAILABLE"
+      },
+      "request_id": "request-7"
+    }
+  },
+  {
+    "action": "trace_archived",
+    "method": "GET",
+    "path": "/api/v1/production-traces/ab3b1e74-dfe9-47b3-8092-bf2aca93fd75",
+    "status": 200,
+    "body": {
+      "data": {
+        "trace_id": "ab3b1e74-dfe9-47b3-8092-bf2aca93fd75",
+        "completeness": "COMPLETE",
+        "availability": "ARCHIVED"
+      },
+      "request_id": "request-8"
+    }
+  },
+  {
+    "action": "submit_proposal",
+    "method": "POST",
+    "path": "/api/v1/datasets/17b011b7-a102-4c93-94e9-000000000010/case-proposals",
+    "idempotency_key": "17b011b7-a102-4c93-94e9-000000000011",
+    "request": {
+      "proposal_id": "17b011b7-a102-4c93-94e9-000000000011",
+      "case_id": "17b011b7-a102-4c93-94e9-000000000012",
+      "review_id": "17b011b7-a102-4c93-94e9-000000000014",
+      "project": {
+        "project_id": "dd1bbc44-4450-4341-ab3b-c6b55815042c",
+        "project_slug": "ecommerce-customer-service",
+        "environment": "test"
+      },
+      "dataset_id": "17b011b7-a102-4c93-94e9-000000000010",
+      "case_key": "calibration-date-lookup",
+      "input": {
+        "query": "这台设备上次校准是哪天？"
+      },
+      "expected": {
+        "criteria": [
+          "查询设备对应的校准记录并回答日期，缺少记录时明确说明。"
+        ]
+      },
+      "evidence_refs": [
+        "trace:ab3b1e74-dfe9-47b3-8092-bf2aca93fd75"
+      ]
+    },
+    "status": 201,
+    "body": {
+      "data": {
+        "proposal_id": "17b011b7-a102-4c93-94e9-000000000011",
+        "draft_id": "17b011b7-a102-4c93-94e9-000000000005",
+        "evaluation_case_id": "17b011b7-a102-4c93-94e9-000000000013",
+        "case_key": "calibration-date-lookup"
+      },
+      "request_id": "request-9"
+    }
+  },
+  {
+    "action": "proposal_replay",
+    "method": "POST",
+    "path": "/api/v1/datasets/17b011b7-a102-4c93-94e9-000000000010/case-proposals",
+    "request_from": "submit_proposal",
+    "idempotency_key": "17b011b7-a102-4c93-94e9-000000000011",
+    "status": 200,
+    "body": {
+      "data": {
+        "proposal_id": "17b011b7-a102-4c93-94e9-000000000011",
+        "draft_id": "17b011b7-a102-4c93-94e9-000000000005",
+        "evaluation_case_id": "17b011b7-a102-4c93-94e9-000000000013",
+        "case_key": "calibration-date-lookup"
+      },
+      "request_id": "request-10"
+    }
+  },
+  {
+    "action": "case_results",
+    "method": "GET",
+    "path": "/api/v1/regression-batches/17b011b7-a102-4c93-94e9-000000000002/case-results",
+    "status": 200,
+    "body": {
+      "data": {
+        "regression_batch_id": "17b011b7-a102-4c93-94e9-000000000002",
+        "dataset_version_id": "17b011b7-a102-4c93-94e9-000000000005",
+        "items": [
+          {
+            "evaluation_case_id": "17b011b7-a102-4c93-94e9-000000000013",
+            "case_key": "calibration-date-lookup",
+            "trial_results": [
+              "PASSED",
+              "FAILED",
+              "PASSED"
+            ]
+          },
+          {
+            "evaluation_case_id": "17b011b7-a102-4c93-94e9-000000000016",
+            "case_key": "manual-search",
+            "trial_results": [
+              "PASSED",
+              "PASSED",
+              "PASSED"
+            ]
+          }
+        ],
+        "next_cursor": null
+      },
+      "request_id": "request-11"
+    }
+  }
+]

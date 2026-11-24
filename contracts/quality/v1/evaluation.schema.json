@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Evaluation-Platform · Reviewed case proposal and per-case regression results v1",
+  "$defs": {
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_id",
+        "case_id",
+        "review_id",
+        "project",
+        "dataset_id",
+        "case_key",
+        "input",
+        "expected",
+        "evidence_refs"
+      ],
+      "properties": {
+        "proposal_id": {"type":"string","format":"uuid"},
+        "case_id": {"type":"string","format":"uuid"},
+        "review_id": {"type":"string","format":"uuid"},
+        "project": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["project_id","project_slug","environment"],
+          "properties": {
+            "project_id": {"type":"string","format":"uuid"},
+            "project_slug": {"type":"string","minLength":1},
+            "environment": {"type":"string","minLength":1}
+          }
+        },
+        "dataset_id": {"type":"string","format":"uuid"},
+        "case_key": {"type":"string","minLength":1,"maxLength":128},
+        "input": {"type":"object","minProperties":1},
+        "expected": {"type":"object"},
+        "evidence_refs": {"type":"array","items":{"type":"string","minLength":1}}
+      }
+    },
+    "proposalResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data","request_id"],
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["proposal_id","draft_id","evaluation_case_id","case_key"],
+          "properties": {
+            "proposal_id": {"type":"string","format":"uuid"},
+            "draft_id": {"type":"string","format":"uuid"},
+            "evaluation_case_id": {"type":"string","format":"uuid"},
+            "case_key": {"type":"string","minLength":1},
+            "published_dataset_version_id": {"anyOf":[{"type":"string","format":"uuid"},{"type":"null"}]}
+          }
+        },
+        "request_id": {"type":"string","minLength":1}
+      }
+    },
+    "caseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluation_case_id","case_key","trial_results"],
+      "properties": {
+        "evaluation_case_id": {"type":"string","format":"uuid"},
+        "case_key": {"type":"string","minLength":1},
+        "trial_results": {"type":"array","items":{"enum":["PASSED","FAILED","BLOCKED"]},"minItems":3,"maxItems":3}
+      }
+    },
+    "caseResultsResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data","request_id"],
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["regression_batch_id","dataset_version_id","items","next_cursor"],
+          "properties": {
+            "regression_batch_id": {"type":"string","format":"uuid"},
+            "dataset_version_id": {"type":"string","format":"uuid"},
+            "items": {"type":"array","items":{"$ref":"#/$defs/caseResult"}},
+            "next_cursor": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]}
+          }
+        },
+        "request_id": {"type":"string","minLength":1}
+      }
+    }
+  }
+}

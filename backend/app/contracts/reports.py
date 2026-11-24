@@ -94,6 +94,7 @@ class Summary(Contract):
     partial: int
     missing: int
     not_collected: int
+    trace_mode: Literal["disabled", "callback", "embedded"]
     trace_complete_rate: Ratio
 
 

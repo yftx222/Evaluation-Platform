@@ -15,16 +15,29 @@ from test_trace_write import window as window
 from app.api.main import create_app
 from app.infrastructure.resources import Resources, Settings
 from app.worker.execution import CaseRunner
-from app.worker.scheduler import claim, initialize
+from app.worker.scheduler import claim, initialize, reconcile
 from app.worker.settings import WorkerSettings
 from trace_sdk.client import TraceSession
 
 
-@pytest.mark.parametrize("path", ["retry", "overflow", "cancel", "offline"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "retry",
+        "rate_limit",
+        "overflow",
+        "cancel",
+        "agent_error",
+        "offline",
+        "unavailable",
+        "timeout",
+    ],
+)
 def test_sdk_delivery(window: Window, path: str) -> None:
     w = window
     batches: list[bytes] = []
     final = []
+    unblock = threading.Event()
 
     class Proxy(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -32,14 +45,23 @@ def test_sdk_delivery(window: Window, path: str) -> None:
 
         def do_POST(self) -> None:
             body = self.rfile.read(int(self.headers["Content-Length"]))
+            if path == "unavailable" and self.path.endswith(":batch"):
+                batches.append(body)
+                self.send_response(500)
+                self.end_headers()
+                return
+            if path == "timeout" and self.path.endswith(":batch"):
+                # Hold the transport until the SDK's own deadline has expired.
+                unblock.wait(6)
+                return
             response = w.api.post(
                 self.path, content=body, headers={"Authorization": self.headers["Authorization"]}
             )
             status = response.status_code
             if self.path.endswith(":batch"):
                 batches.append(body)
-                if path == "offline" or path == "retry" and len(batches) == 1:
-                    status = 503
+                if path == "offline" or path in {"retry", "rate_limit"} and len(batches) == 1:
+                    status = 429 if path == "rate_limit" else 500
             else:
                 final.append(json.loads(body))
             self.send_response(status)
@@ -56,6 +78,7 @@ def test_sdk_delivery(window: Window, path: str) -> None:
             w.trace,
             w.token,
             capacity=1 if path == "overflow" else 12,
+            timeout=0.6 if path == "timeout" else 5,
         )
         root = sdk.add("AGENT_STEP", "plan", input={"api_key": "secret-fixture"})
         assert root
@@ -69,24 +92,42 @@ def test_sdk_delivery(window: Window, path: str) -> None:
             with pytest.raises(asyncio.CancelledError):
                 async with sdk:
                     raise asyncio.CancelledError
+        elif path == "agent_error":
+            with pytest.raises(ValueError, match="agent error"):
+                async with sdk:
+                    raise ValueError("agent error")
+        elif path == "timeout":
+            async with sdk:
+                pass
+            assert sdk.status == "PARTIAL" and not sdk.finalize_confirmed
         else:
-            assert await sdk.flush() == (path == "retry")
-        await sdk.finish()
-        assert sdk.status == ("COMPLETE" if path == "retry" else "PARTIAL")
+            assert await sdk.flush() == (path in {"retry", "rate_limit"})
+        if path in {"cancel", "agent_error", "timeout"}:
+            assert sdk.finish().done()
+        waiter = sdk.finish()
+        waiter.cancel()
+        await asyncio.gather(sdk.finish(), sdk.finish())
+        assert sdk.finish().done()
+        if path == "unavailable":
+            assert sdk.confirmed_status == "MISSING"
+            assert w.api.get(w.url).json()["data"]["event_count"] == 0
+        assert sdk._token == "" and sdk.finalize_confirmed == (path != "timeout")
+        assert sdk.status == ("COMPLETE" if path in {"retry", "rate_limit"} else "PARTIAL")
 
     try:
         asyncio.run(exercise())
     finally:
+        unblock.set()
         server.shutdown()
         server.server_close()
         thread.join()
     assert b"secret-fixture" not in b"".join(batches)
-    if path == "retry":
+    if path in {"retry", "rate_limit"}:
         assert len(batches) == 2 and batches[0] == batches[1]
         assert w.api.get(w.url).json()["data"]["event_count"] == 2
-    if path == "offline":
+    if path in {"offline", "unavailable"}:
         assert len(batches) == 3 and len(set(batches)) == 1
-    assert len(final) == 1
+    assert len(final) == int(path != "timeout")
 
 
 def test_paginated_timeline_and_private_detail(window: Window) -> None:
@@ -117,9 +158,15 @@ def test_paginated_timeline_and_private_detail(window: Window) -> None:
     assert w.api.get(detail, headers=w.headers).status_code == 401
 
 
-@pytest.mark.parametrize("kind", ["agent", "openai_compatible"])
+@pytest.mark.parametrize(
+    ("kind", "corrupt"),
+    [("agent", False), ("openai_compatible", False), ("openai_compatible", True)],
+)
 def test_embedded_version_contract(
-    catalog: tuple[Settings, dict[str, str]], kind: str, request: pytest.FixtureRequest
+    catalog: tuple[Settings, dict[str, str]],
+    kind: str,
+    corrupt: bool,
+    request: pytest.FixtureRequest,
 ) -> None:
     settings, tokens = catalog
 
@@ -149,7 +196,7 @@ def test_embedded_version_contract(
             if kind == "openai_compatible":
                 trace["finalize"].update(contiguous=False, event_count=1, last_sequence=8)
                 entry["sequence"] = 8
-            ty = "FINAL_OUTPUT" if query == "one" else "MODEL_CALL"
+            ty = "FINAL_OUTPUT" if query == "one" or corrupt else "MODEL_CALL"
             if kind == "agent":
                 legacy = {
                     "source_event_key": "span",
@@ -165,6 +212,9 @@ def test_embedded_version_contract(
                 trace["events"] = [
                     dict(entry, event_type=ty, status="UNKNOWN") if query != "three" else {}
                 ]
+                if corrupt and query == "two":
+                    # Even if the required event was received, a malformed sibling forces PARTIAL.
+                    trace["events"].append({})
                 record["choices"] = [{"message": {"content": query}}]
             self.send_response(200)
             self.end_headers()
@@ -224,12 +274,30 @@ def test_embedded_version_contract(
                     async with asyncio.timeout(15):
                         while (lease := await claim(resources, cfg)) is not None:
                             await runner(resources, lease)
+                        await reconcile(resources, 20)
                 finally:
                     await resources.close()
 
             asyncio.run(execute())
             items = api.get(ROOT + f"/evaluations/runs/{rid}/results").json()["data"]["items"]
             assert len(items) == 3
+            report = api.get(ROOT + f"/reports/runs/{rid}").json()["data"]["summary"]
+            assert (
+                report["trace_mode"] == "embedded"
+                and report["trace_complete_rate"]["denominator"] == 3
+            )
+            assert (
+                report["complete"],
+                report["partial"],
+                report["missing"],
+                report["not_collected"],
+            ) == (1, 1, 1, 0)
+            for signal, expected in [("trace_partial", "two"), ("trace_missing", "three")]:
+                url = ROOT + f"/reports/runs/{rid}"
+                query = {"signal": signal}
+                selected = api.get(url + "/bad-cases", params=query).json()["data"]["items"]
+                assert [c["case_key"] for c in selected] == [expected]
+                assert api.get(url + "/export", params=query).json()["cases"] == selected
             for item in items:
                 key = item["case_key"]
                 assert item["prediction"]["answer"] == key
@@ -241,7 +309,9 @@ def test_embedded_version_contract(
                     == {"one": "COMPLETE", "two": "PARTIAL", "three": "MISSING"}[key]
                 )
                 if key == "two":
-                    assert summary["close_reason"] == "REQUIRED_EVENT_MISSING"
+                    assert summary["close_reason"] == (
+                        "SOURCE_INCOMPLETE" if corrupt else "REQUIRED_EVENT_MISSING"
+                    )
                 assert summary["capabilities"] == version["trace_capabilities"]
                 events = api.get(ROOT + "/traces/" + trace_id + "/events").json()["data"]["items"]
                 assert "private-value" not in json.dumps(events)

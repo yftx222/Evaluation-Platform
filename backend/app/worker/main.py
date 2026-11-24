@@ -20,6 +20,7 @@ from app.infrastructure.resources import Resources, Settings
 from app.plugins.evaluators import registry as evaluator_registry
 from app.plugins.http_adapter import registry as adapter_registry
 from app.worker.execution import CaseRunner
+from app.worker.quality import maintain_quality
 from app.worker.scheduler import CHANNEL, Lease, claim, initialize, reconcile, release, renew
 from app.worker.settings import WorkerSettings
 
@@ -108,6 +109,7 @@ async def serve(
                 pass
 
     publisher = asyncio.create_task(publish_progress())
+    quality = asyncio.create_task(maintain_quality(resources, settings, stop))
 
     def finished(run_id: str, task: asyncio.Task[None]) -> None:
         active.discard(task)
@@ -170,7 +172,8 @@ async def serve(
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
         publisher.cancel()
-        await asyncio.gather(publisher, return_exceptions=True)
+        quality.cancel()
+        await asyncio.gather(publisher, quality, return_exceptions=True)
         await resources.close()
 
 

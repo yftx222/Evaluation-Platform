@@ -338,6 +338,9 @@ def test_batch_browser_and_api_restart(catalog: tuple[Settings, dict[str, str]])
                     page.get_by_role("button", name="查看评测报告").click()
                     report = page.get_by_role("region", name="评测报告", exact=True)
                     expect(report.get_by_text("评分器表现", exact=True)).to_be_visible()
+                    expect(report.get_by_text("采集方式 响应内嵌", exact=False)).to_contain_text(
+                        "22/22"
+                    )
                     report.get_by_label("分组维度").select_option("tag")
                     report.get_by_label("筛选条件").select_option("all")
                     current_page = page.get_by_role("table").filter(
@@ -370,6 +373,42 @@ def test_batch_browser_and_api_restart(catalog: tuple[Settings, dict[str, str]])
                     )
                     assert client.patch(tp, json={"description": "x"}).status_code == 409
                     assert client.get(runpath).json()["data"]["score_counts"]["OK"] == 22
+                    with TestClient(create_app(config), headers=headers) as setup:
+                        for mode in ("disabled", "callback"):
+                            pv = create(
+                                setup,
+                                f"/projects/{project}/versions",
+                                label=mode,
+                                deployment_ref="fixed",
+                                adapter={
+                                    "endpoint": local + "/ask",
+                                    "probe_endpoint": local + "/ready",
+                                },
+                                trace_capabilities={"mode": mode},
+                            )
+                            create(
+                                setup,
+                                "/evaluations/tasks",
+                                name=mode,
+                                project_version_id=pv["id"],
+                                dataset_version_id=f["dv"]["id"],
+                                evaluator_version_ids=[f["exact"]["id"]],
+                            )
+                    page.get_by_label("任务状态").select_option("false")
+                    for mode, label, counts, fraction in [
+                        ("disabled", "关闭", "缺失 0 · 未采集 3", "不适用（0/0）"),
+                        ("callback", "回调", "缺失 3 · 未采集 0", "0/3"),
+                    ]:
+                        page.get_by_role("button", name=mode, exact=True).click()
+                        page.get_by_role("button", name="启动运行").click()
+                        page.get_by_role("button", name="查看评测报告").click(timeout=20000)
+                        coverage = (
+                            page.get_by_role("region", name="评测报告", exact=True)
+                            .locator("p")
+                            .filter(has_text="采集方式 " + label)
+                        )
+                        expect(coverage).to_contain_text(counts)
+                        expect(coverage).to_contain_text(fraction)
             browser.close()
         if os.name == "posix":
             assert worker.returncode == 0, "Worker failed to shut down cleanly on SIGTERM"

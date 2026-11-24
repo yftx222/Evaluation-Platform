@@ -73,6 +73,6 @@ def application() -> FastAPI:
             }
         finally:
             active_attempt.reset(mark)
-            session.finish(complete=False)
+            await session.finish(complete=False)
 
     return api

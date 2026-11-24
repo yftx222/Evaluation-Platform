@@ -92,6 +92,7 @@ def test_readiness_and_logs(services: Settings, caplog: pytest.LogCaptureFixture
         "0008_attempt_traces",
         "0009_trace_capabilities",
         "0010_trace_archives",
+        "0011_trace_allocation",
     ],
     indirect=True,
 )
@@ -108,14 +109,15 @@ def test_worker_schema_compatibility(catalog: tuple[Settings, dict[str, str]]) -
                 "0007_task_archive",
                 "0008_attempt_traces",
                 "0009_trace_capabilities",
+                "0010_trace_archives",
             }:
-                with pytest.raises(RuntimeError, match=f"0010_trace_archives.*{current}"):
+                with pytest.raises(RuntimeError, match=f"0011_trace_allocation.*{current}"):
                     await initialize(resources, WorkerSettings())
                 return
             await initialize(resources, WorkerSettings())
             async with resources.transaction() as db:
                 await db.execute(text("ALTER TABLE worker_capacity ADD COLUMN note text"))
-                await db.execute(text("UPDATE alembic_version SET version_num='0011_add_note'"))
+                await db.execute(text("UPDATE alembic_version SET version_num='0012_add_note'"))
             await initialize(resources, WorkerSettings())
             async with resources.transaction() as db:
                 await db.execute(

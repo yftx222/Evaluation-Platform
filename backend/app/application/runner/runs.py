@@ -24,16 +24,22 @@ RESULT = """SELECT c.id,c.id AS execution_id,c.created_at,c.run_id,c.case_id,s.c
     s.input,c.status,
     c.stage,c.attempt_count,c.latency_ms,c.prediction,c.prediction_attempt_id,c.adapter_error_code,
     COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'stage',a.stage,'status',a.status,
-    'trace_id',a.trace_id,'trace_status',t.status,'trace_event_count',t.event_count,
+    'trace_id',t.id,'trace_status',t.status,'trace_event_count',t.event_count,
     'attempt_no',a.attempt_no,'epoch',a.epoch,'delivery_state',a.delivery_state,
     'evaluator_version_id',a.evaluator_version_id,'error_code',a.error_code) ORDER BY a.attempt_no)
     FROM execution_attempts a LEFT JOIN traces t ON t.id=a.trace_id
+      AND r.config_snapshot #>> '{project_version,trace_capabilities,mode}'
+        IS DISTINCT FROM 'disabled'
     WHERE a.execution_id=c.id),'[]') AS attempts,
     COALESCE((SELECT jsonb_agg(to_jsonb(g) ORDER BY g.evaluator_version_id)
     FROM evaluation_scores g WHERE g.execution_id=c.id),'[]') AS scores,
     COALESCE((SELECT jsonb_agg(a.trace_id ORDER BY a.attempt_no) FROM execution_attempts a
-    WHERE a.execution_id=c.id AND a.trace_id IS NOT NULL),'[]') AS trace_ids
-    FROM case_executions c JOIN evaluation_cases s ON s.id=c.case_id WHERE c.run_id=:r"""
+    WHERE a.execution_id=c.id AND a.trace_id IS NOT NULL
+      AND r.config_snapshot #>> '{project_version,trace_capabilities,mode}'
+        IS DISTINCT FROM 'disabled'),'[]') AS trace_ids
+    FROM case_executions c JOIN evaluation_cases s ON s.id=c.case_id
+    JOIN evaluation_runs r ON r.id=c.run_id
+    WHERE c.run_id=:r"""
 
 
 def ratio(numerator: int, denominator: int) -> dict[str, int | float | None]:

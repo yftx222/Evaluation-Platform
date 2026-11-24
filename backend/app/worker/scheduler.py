@@ -13,7 +13,7 @@ from app.worker.settings import WorkerSettings
 DUE = """(c.status='READY' OR (c.status='RETRY_WAIT' AND c.next_retry_at<=clock_timestamp()))"""
 LIVE = """c.status='RUNNING' AND c.lease_expires_at>clock_timestamp()"""
 CHANNEL = "evaluations:wake"
-MIN_SCHEMA = "0010_trace_archives"
+MIN_SCHEMA = "0011_trace_allocation"
 
 
 @dataclass(frozen=True)
@@ -119,10 +119,17 @@ async def claim(resources: Resources, cfg: WorkerSettings) -> Lease | None:
         if active >= capacity:
             return None
         selection = await db.execute(
-            text(f"""SELECT p.id project,r.id run
+            text(f"""SELECT p.id project,r.id run, admission.admit_new
             FROM projects p JOIN evaluation_runs r ON r.project_id=p.id
+            CROSS JOIN LATERAL (
+                SELECT count(*) < least(p.max_parallel,
+                    CAST(r.config_snapshot->'policy'->>'max_parallel' AS integer)) AS admit_new
+                FROM case_executions c WHERE c.run_id=r.id AND c.started_at IS NOT NULL
+                    AND c.status IN ('READY','RUNNING','RETRY_WAIT')
+            ) AS admission
             WHERE p.enabled AND r.status IN ('QUEUED','RUNNING')
-            AND EXISTS(SELECT 1 FROM case_executions c WHERE c.run_id=r.id AND {DUE})
+            AND EXISTS(SELECT 1 FROM case_executions c WHERE c.run_id=r.id AND {DUE}
+                       AND (admission.admit_new OR c.started_at IS NOT NULL))
             AND (SELECT count(*) FROM case_executions c JOIN evaluation_runs v ON v.id=c.run_id
                  WHERE v.project_id=p.id AND {LIVE})<p.max_parallel
             AND (SELECT count(*) FROM case_executions c WHERE c.run_id=r.id AND {LIVE})
@@ -137,9 +144,10 @@ async def claim(resources: Resources, cfg: WorkerSettings) -> Lease | None:
             return None
         candidate = await db.execute(
             text(f"""SELECT c.id,c.status FROM case_executions c
-            WHERE c.run_id=:r AND {DUE} ORDER BY c.next_retry_at NULLS LAST,c.id
+            WHERE c.run_id=:r AND {DUE} AND (:admit_new OR c.started_at IS NOT NULL)
+            ORDER BY (c.started_at IS NULL),c.next_retry_at NULLS LAST,c.id
             LIMIT 1 FOR UPDATE SKIP LOCKED"""),
-            {"r": chosen["run"]},
+            {"r": chosen["run"], "admit_new": chosen["admit_new"]},
         )
         item = candidate.mappings().one_or_none()
         if item is None:

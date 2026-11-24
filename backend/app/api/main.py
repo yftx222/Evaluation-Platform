@@ -20,7 +20,12 @@ from app.api import (
     evaluators,
     evidence,
     members,
+    online_quality,
+    production_traces,
     projects,
+    quality_batches,
+    quality_proposals,
+    quality_reports,
     reports,
     run_progress,
     traces,
@@ -81,6 +86,11 @@ def create_app(
     api.include_router(run_progress.router)
 
     api.include_router(traces.router)
+    api.include_router(production_traces.router)
+    api.include_router(quality_proposals.router)
+    api.include_router(quality_batches.router)
+    api.include_router(quality_reports.router)
+    api.include_router(online_quality.router)
     api.include_router(evidence.router)
     api.include_router(reports.router)
 
@@ -109,7 +119,11 @@ def create_app(
 
     @api.exception_handler(AdapterError)
     async def adapter_fault(request: Request, exc: AdapterError) -> JSONResponse:
-        return error(request, 422, exc.code, "接入配置不可用")
+        messages = {
+            "DATAAGENT_ENVIRONMENT_CHANGED": "环境已变化，请核对 DataAgent 项目版本。",
+            "DATAAGENT_ENVIRONMENT_UNAVAILABLE": "无法读取快照，请检查评测服务与权限。",
+        }
+        return error(request, 422, exc.code, messages.get(exc.code, "接入配置不可用"))
 
     @api.exception_handler(TimeoutError)
     async def timeout(request: Request, exc: TimeoutError) -> JSONResponse:

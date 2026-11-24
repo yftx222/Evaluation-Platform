@@ -109,6 +109,7 @@ async def version_adapter_config(db: AsyncSession, project: UUID, version: UUID)
     )
     config = dict(stored["config"])
     pinned = config.pop("_implementation_digest", None)
+    config.pop("_environment", None)
     kind, build = stored["kind"], stored["build"]
     deployed = registry.digest(kind, build)
     if pinned is None:

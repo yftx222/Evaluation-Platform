@@ -56,14 +56,61 @@ class KeyCreate(KeyExpiry):
     scopes: list[Scope] = Field(min_length=1, max_length=2)
 
 
+type Commit = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}$")]
+type Checksum = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
+class CustomerManifest(Contract):
+    customer_service_sha: Commit
+    ai_service_sha: Commit
+    model_provider: Literal["deepseek", "openai_compatible", "qwen"]
+    model_id: Name
+    thinking_mode: Literal["disabled", "enabled"]
+    prompt_version: Name
+    prompt_digest: Checksum
+    tools_skills_digest: Checksum
+    history_message_limit: int = Field(ge=1, le=60)
+    history_character_budget: int = Field(ge=1)
+    fixture_version: Name
+    fixture_digest: Checksum
+    profile: Name
+    principal: Name
+    role: Literal["customer"]
+    business_mutation: Literal[False]
+
+
 class Publish(Contract):
     label: Name
     deployment_ref: Name
     adapter: AdapterConfig
+    customer_manifest: CustomerManifest | None = Field(default=None, exclude_if=lambda v: v is None)
     trace_capabilities: TraceCapabilities = Field(default_factory=TraceCapabilities)
 
     @model_validator(mode="after")
     def protocol_defaults(self) -> Self:
+        if self.adapter.kind == "dataagent" and self.adapter.build in {"2", "3"}:
+            if self.trace_capabilities.mode == "embedded":
+                raise ValueError("此 DataAgent 版本支持 callback 或 disabled")
+            if "trace_capabilities" not in self.model_fields_set:
+                self.trace_capabilities = TraceCapabilities(
+                    event_types=[
+                        "AGENT_STEP",
+                        "MODEL_CALL",
+                        "TOOL_CALL",
+                        "RETRIEVAL",
+                        "FINAL_OUTPUT",
+                        "CUSTOM",
+                    ],
+                    required_events=["FINAL_OUTPUT"],
+                    retrieval_refs=False,
+                )
+        if self.adapter.kind == "dataagent" and self.adapter.build == "1":
+            if (
+                "trace_capabilities" in self.model_fields_set
+                and self.trace_capabilities.mode != "disabled"
+            ):
+                raise ValueError("DataAgent D1 仅支持关闭轨迹采集")
+            self.trace_capabilities = TraceCapabilities(mode="disabled", event_types=[])
         if (
             "trace_capabilities" not in self.model_fields_set
             and self.adapter.kind == "openai_compatible"
