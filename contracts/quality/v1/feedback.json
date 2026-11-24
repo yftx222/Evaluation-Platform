@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "event_id": "437e9859-996a-49d0-b99b-f64ab07f30b9",
+  "event_type": "USER_FEEDBACK",
+  "occurred_at": "2026-11-24T01:05:00Z",
+  "source_system": "ecommerce-customer-service",
+  "project": {
+    "project_id": "dd1bbc44-4450-4341-ab3b-c6b55815042c",
+    "project_slug": "ecommerce-customer-service",
+    "environment": "test"
+  },
+  "deployment_version": "fixture-v1",
+  "correlation": {
+    "conversation_id": "demo-conversation-1",
+    "message_id": "demo-message-2",
+    "agent_run_id": "demo-run-1",
+    "trace_id": "ab3b1e74-dfe9-47b3-8092-bf2aca93fd75",
+    "experiment_id": null,
+    "variant_id": null
+  },
+  "payload": {
+    "feedback": "negative",
+    "reason": "answer_incomplete",
+    "comment": "用户询问校准日期，回到会话发现答复只描述操作步骤。"
+  }
+}

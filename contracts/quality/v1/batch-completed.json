@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "event_id": "17b011b7-a102-4c93-94e9-000000000001",
+  "event_type": "REGRESSION_BATCH_COMPLETED",
+  "occurred_at": "2026-11-24T01:40:00Z",
+  "source_system": "evaluation-platform",
+  "project": {
+    "project_id": "dd1bbc44-4450-4341-ab3b-c6b55815042c",
+    "project_slug": "ecommerce-customer-service",
+    "environment": "test"
+  },
+  "deployment_version": "fixture-v2",
+  "correlation": {},
+  "payload": {
+    "regression_batch_id": "17b011b7-a102-4c93-94e9-000000000002",
+    "task_id": "17b011b7-a102-4c93-94e9-000000000003",
+    "project_version_id": "17b011b7-a102-4c93-94e9-000000000004",
+    "dataset_version_id": "17b011b7-a102-4c93-94e9-000000000005",
+    "evaluator_version_ids": [
+      "17b011b7-a102-4c93-94e9-000000000006"
+    ],
+    "trials": [
+      {
+        "trial": 1,
+        "run_id": "17b011b7-a102-4c93-94e9-000000000007",
+        "status": "COMPLETED"
+      },
+      {
+        "trial": 2,
+        "run_id": "17b011b7-a102-4c93-94e9-000000000008",
+        "status": "COMPLETED"
+      },
+      {
+        "trial": 3,
+        "run_id": "17b011b7-a102-4c93-94e9-000000000009",
+        "status": "COMPLETED"
+      }
+    ],
+    "blocking_failures": [
+      "calibration-date-lookup"
+    ],
+    "gate": "FAILED",
+    "report_ref": "/api/v1/regression-batches/17b011b7-a102-4c93-94e9-000000000002/report",
+    "case_results_ref": "/api/v1/regression-batches/17b011b7-a102-4c93-94e9-000000000002/case-results"
+  }
+}

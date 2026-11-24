@@ -1,0 +1,142 @@
+{
+  "batch": {
+    "schema_version": "1.0",
+    "trace": {
+      "trace_id": "ab3b1e74-dfe9-47b3-8092-bf2aca93fd75",
+      "agent_run_id": "demo-run-1",
+      "conversation_id": "demo-conversation-1",
+      "message_id": "demo-message-2",
+      "environment": "test",
+      "deployment_version": "fixture-v1",
+      "started_at": "2026-11-24T01:00:00Z",
+      "lineage": {
+        "model_provider": "fixture",
+        "model_id": "model-v1",
+        "model_revision": null,
+        "prompt_version": "prompt-1",
+        "tool_version": "v1",
+        "skill_version": "v1",
+        "knowledge_version": null,
+        "fixture_version": "fixture-v1"
+      }
+    },
+    "events": [
+      {
+        "schema_version": "1.0",
+        "event_key": "agent",
+        "sequence": 1,
+        "parent_event_key": null,
+        "event_type": "AGENT_STEP",
+        "name": "agent",
+        "status": "SUCCEEDED",
+        "started_at": "2026-11-24T01:00:00Z"
+      },
+      {
+        "schema_version": "1.0",
+        "event_key": "catalog",
+        "sequence": 2,
+        "parent_event_key": "agent",
+        "event_type": "TOOL_CALL",
+        "name": "catalog",
+        "status": "SUCCEEDED",
+        "started_at": "2026-11-24T01:00:00Z",
+        "attributes": {"call_kind":"skill"}
+      },
+      {
+        "schema_version": "1.0",
+        "event_key": "answer",
+        "sequence": 3,
+        "parent_event_key": "agent",
+        "event_type": "FINAL_OUTPUT",
+        "name": "answer",
+        "status": "SUCCEEDED",
+        "started_at": "2026-11-24T01:00:00Z"
+      }
+    ]
+  },
+  "finalize": {
+    "trace_id": "ab3b1e74-dfe9-47b3-8092-bf2aca93fd75",
+    "outcome": "COMPLETE",
+    "event_count": 3,
+    "contiguous": true,
+    "last_sequence": 3
+  },
+  "detail": {
+    "data": {
+      "trace_id": "ab3b1e74-dfe9-47b3-8092-bf2aca93fd75",
+      "agent_run_id": "demo-run-1",
+      "conversation_id": "demo-conversation-1",
+      "message_id": "demo-message-2",
+      "environment": "test",
+      "deployment_version": "fixture-v1",
+      "started_at": "2026-11-24T01:00:00Z",
+      "lineage": {
+        "model_provider": "fixture",
+        "model_id": "model-v1",
+        "model_revision": null,
+        "prompt_version": "prompt-1",
+        "tool_version": "v1",
+        "skill_version": "v1",
+        "knowledge_version": null,
+        "fixture_version": "fixture-v1"
+      },
+      "project_id": "dd1bbc44-4450-4341-ab3b-c6b55815042c",
+      "completeness": "COMPLETE",
+      "availability": "AVAILABLE",
+      "event_count": 3,
+      "last_sequence": 3,
+      "collection_level": "full_redacted",
+      "retained_until": "2026-12-01T00:00:00Z"
+    },
+    "request_id": "detail-example"
+  },
+  "pages": [
+    {
+      "data": {
+        "items": [
+          {
+            "schema_version": "1.0",
+            "event_key": "agent",
+            "sequence": 1,
+            "parent_event_key": null,
+            "event_type": "AGENT_STEP",
+            "name": "agent",
+            "status": "SUCCEEDED",
+            "started_at": "2026-11-24T01:00:00Z"
+          },
+          {
+            "schema_version": "1.0",
+            "event_key": "catalog",
+            "sequence": 2,
+            "parent_event_key": "agent",
+            "event_type": "TOOL_CALL",
+            "name": "catalog",
+            "status": "SUCCEEDED",
+            "started_at": "2026-11-24T01:00:00Z",
+            "attributes": {"call_kind":"skill"}
+          }
+        ],
+        "next_cursor": "opaque-page-token"
+      },
+      "request_id": "page-1"
+    },
+    {
+      "data": {
+        "items": [
+          {
+            "schema_version": "1.0",
+            "event_key": "answer",
+            "sequence": 3,
+            "parent_event_key": "agent",
+            "event_type": "FINAL_OUTPUT",
+            "name": "answer",
+            "status": "SUCCEEDED",
+            "started_at": "2026-11-24T01:00:00Z"
+          }
+        ],
+        "next_cursor": null
+      },
+      "request_id": "page-2"
+    }
+  ]
+}

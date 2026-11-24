@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Evaluation-Platform · Production Trace v1",
+  "description": "Select a named definition using the method and path in README.md.",
+  "$defs": {
+    "traceEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {"const":"1.0","default":"1.0","title":"Schema Version","type":"string"},
+        "event_key": {"pattern":"^[A-Za-z0-9_.:-]{1,128}$","title":"Event Key","type":"string"},
+        "sequence": {"maximum":9223372036854775807,"minimum":1,"title":"Sequence","type":"integer"},
+        "parent_event_key": {
+          "anyOf": [{"pattern":"^[A-Za-z0-9_.:-]{1,128}$","type":"string"},{"type":"null"}],
+          "default": null,
+          "title": "Parent Event Key"
+        },
+        "event_type": {
+          "enum": ["AGENT_STEP","MODEL_CALL","TOOL_CALL","RETRIEVAL","RERANK","GUARDRAIL","FINAL_OUTPUT","CUSTOM"],
+          "title": "Event Type",
+          "type": "string"
+        },
+        "name": {"maxLength":160,"minLength":1,"title":"Name","type":"string"},
+        "status": {"enum":["STARTED","SUCCEEDED","FAILED","CANCELLED","UNKNOWN"],"title":"Status","type":"string"},
+        "started_at": {"format":"date-time","title":"Started At","type":"string"},
+        "ended_at": {"anyOf":[{"format":"date-time","type":"string"},{"type":"null"}],"default":null,"title":"Ended At"},
+        "duration_ms": {
+          "anyOf": [{"maximum":604800000,"minimum":0,"type":"integer"},{"type":"null"}],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "input": {"additionalProperties":true,"title":"Input","type":"object"},
+        "output": {"additionalProperties":true,"title":"Output","type":"object"},
+        "attributes": {"additionalProperties":true,"title":"Attributes","type":"object"},
+        "resource": {"additionalProperties":true,"title":"Resource","type":"object"}
+      },
+      "required": ["event_key","sequence","event_type","name","status","started_at"],
+      "title": "TraceEventInput",
+      "type": "object"
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "project_version_id": {"anyOf":[{"type":"string","format":"uuid"},{"type":"null"}]},
+        "model_provider": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "model_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "model_revision": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "prompt_version": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "prompt_digest": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "tool_version": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "skill_version": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "knowledge_version": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "index_version": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "embedding_version": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "agent_config_digest": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "fixture_version": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]}
+      }
+    },
+    "traceRoot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trace_id","environment","deployment_version","agent_run_id","started_at"],
+      "properties": {
+        "trace_id": {"type":"string","format":"uuid"},
+        "environment": {"type":"string","minLength":1},
+        "deployment_version": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "agent_run_id": {"type":"string","minLength":1},
+        "session_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "conversation_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "message_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "experiment_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "variant_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(?:\\.\\d+)?(?:Z|[+-]\\d\\d:\\d\\d)$"
+        },
+        "lineage": {"$ref":"#/$defs/lineage"}
+      }
+    },
+    "writeBatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version","trace","events"],
+      "properties": {
+        "schema_version": {"const":"1.0"},
+        "trace": {"$ref":"#/$defs/traceRoot"},
+        "events": {"type":"array","items":{"$ref":"#/$defs/traceEvent"},"minItems":1}
+      }
+    },
+    "finalize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trace_id","outcome","event_count","contiguous","last_sequence"],
+      "properties": {
+        "trace_id": {"type":"string","format":"uuid"},
+        "outcome": {"enum":["COMPLETE","PARTIAL"]},
+        "event_count": {"type":"integer","minimum":0},
+        "contiguous": {"type":"boolean"},
+        "last_sequence": {"type":"integer","minimum":0}
+      }
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["trace_id","completeness","availability"],
+      "properties": {
+        "trace_id": {"type":"string","format":"uuid"},
+        "environment": {"type":"string","minLength":1},
+        "deployment_version": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "agent_run_id": {"type":"string","minLength":1},
+        "session_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "conversation_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "message_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "experiment_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "variant_id": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]},
+        "started_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(?:\\.\\d+)?(?:Z|[+-]\\d\\d:\\d\\d)$"
+        },
+        "project_id": {"type":"string","format":"uuid"},
+        "event_count": {"type":"integer","minimum":0},
+        "collection_level": {"type":"string","minLength":1},
+        "retained_until": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(?:\\.\\d+)?(?:Z|[+-]\\d\\d:\\d\\d)$"
+            },
+            {"type":"null"}
+          ]
+        },
+        "lineage": {"$ref":"#/$defs/lineage"},
+        "completeness": {"enum":["OPEN","COMPLETE","PARTIAL","MISSING"]},
+        "availability": {"enum":["AVAILABLE","ARCHIVED","EXPIRED","DELETED"]},
+        "last_sequence": {"type":"integer","minimum":0}
+      }
+    },
+    "traceResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data","request_id"],
+      "properties": {"data":{"$ref":"#/$defs/trace"},"request_id":{"type":"string","minLength":1}}
+    },
+    "tracePage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data","request_id"],
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["items","next_cursor"],
+          "properties": {
+            "items": {"type":"array","items":{"$ref":"#/$defs/trace"}},
+            "next_cursor": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]}
+          }
+        },
+        "request_id": {"type":"string","minLength":1}
+      }
+    },
+    "eventsPage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data","request_id"],
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["items","next_cursor"],
+          "properties": {
+            "items": {"type":"array","items":{"$ref":"#/$defs/traceEvent"}},
+            "next_cursor": {"anyOf":[{"type":"string","minLength":1},{"type":"null"}]}
+          }
+        },
+        "request_id": {"type":"string","minLength":1}
+      }
+    },
+    "writeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data","request_id"],
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["trace_id","accepted_events","duplicate_events"],
+          "properties": {
+            "trace_id": {"type":"string","format":"uuid"},
+            "accepted_events": {"type":"integer","minimum":0},
+            "duplicate_events": {"type":"integer","minimum":0}
+          }
+        },
+        "request_id": {"type":"string","minLength":1}
+      }
+    },
+    "finalizeReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["data","request_id"],
+      "properties": {
+        "data": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["trace_id","completeness","event_count"],
+          "properties": {
+            "trace_id": {"type":"string","format":"uuid"},
+            "event_count": {"type":"integer","minimum":0},
+            "completeness": {"enum":["COMPLETE","PARTIAL","MISSING"]}
+          }
+        },
+        "request_id": {"type":"string","minLength":1}
+      }
+    }
+  }
+}

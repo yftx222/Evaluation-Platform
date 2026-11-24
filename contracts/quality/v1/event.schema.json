@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AIOps quality interface v1 · inbound event",
+  "$ref": "#/$defs/event",
+  "$defs": {
+    "id": {"type": "string", "format": "uuid"},
+    "text": {"type": "string", "minLength": 1},
+    "timestamp": {"type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(?:\\.\\d+)?(?:Z|[+-]\\d\\d:\\d\\d)$"},
+    "project": {
+      "type": "object", "additionalProperties": false,
+      "required": ["project_id", "project_slug", "environment"],
+      "properties": {
+        "project_id": {"$ref": "#/$defs/id"},
+        "project_slug": {"$ref": "#/$defs/text"},
+        "environment": {"$ref": "#/$defs/text"}
+      }
+    },
+    "correlation": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "conversation_id": {"type": ["string", "null"], "minLength": 1},
+        "message_id": {"type": ["string", "null"], "minLength": 1},
+        "agent_run_id": {"type": ["string", "null"], "minLength": 1},
+        "trace_id": {"type": ["string", "null"], "format": "uuid"},
+        "experiment_id": {"type": ["string", "null"], "minLength": 1},
+        "variant_id": {"type": ["string", "null"], "minLength": 1}
+      }
+    },
+    "event": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "event_id", "event_type", "occurred_at", "source_system", "project", "deployment_version", "correlation", "payload"],
+      "properties": {
+        "schema_version": {"const": "1.0"},
+        "event_id": {"$ref": "#/$defs/id"},
+        "event_type": {"enum": ["USER_FEEDBACK", "HUMAN_REPORTED", "INSPECTION_ANOMALY", "SHADOW_DIFFERENCE", "AB_GUARDRAIL", "BUSINESS_RULE", "RANDOM_SAMPLE", "TRACE_ANOMALY", "REGRESSION_BATCH_COMPLETED"]},
+        "occurred_at": {"$ref": "#/$defs/timestamp"},
+        "source_system": {"$ref": "#/$defs/text"},
+        "project": {"$ref": "#/$defs/project"},
+        "deployment_version": {"type": ["string", "null"], "minLength": 1},
+        "correlation": {"$ref": "#/$defs/correlation"},
+        "payload": {"type": "object", "minProperties": 1}
+      },
+      "if": {"properties": {"event_type": {"const": "REGRESSION_BATCH_COMPLETED"}}},
+      "then": {"properties": {"payload": {"$ref": "#/$defs/batch"}}}
+    },
+    "batch": {
+      "type": "object",
+      "required": ["regression_batch_id", "task_id", "project_version_id", "dataset_version_id", "evaluator_version_ids", "trials", "blocking_failures", "gate", "report_ref", "case_results_ref"],
+      "properties": {
+        "regression_batch_id": {"$ref": "#/$defs/id"},
+        "task_id": {"$ref": "#/$defs/id"},
+        "project_version_id": {"$ref": "#/$defs/id"},
+        "dataset_version_id": {"$ref": "#/$defs/id"},
+        "evaluator_version_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+        "trials": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/trial"},
+          "allOf": [
+            {"contains": {"properties": {"trial": {"const": 1}}}},
+            {"contains": {"properties": {"trial": {"const": 2}}}},
+            {"contains": {"properties": {"trial": {"const": 3}}}}
+          ]
+        },
+        "blocking_failures": {"type": "array", "items": {"$ref": "#/$defs/text"}},
+        "gate": {"enum": ["PASSED", "FAILED", "BLOCKED"]},
+        "report_ref": {"$ref": "#/$defs/text"},
+        "case_results_ref": {"$ref": "#/$defs/text"}
+      }
+    },
+    "trial": {
+      "type": "object", "required": ["trial", "run_id", "status"],
+      "properties": {
+        "trial": {"type": "integer", "minimum": 1, "maximum": 3},
+        "run_id": {"$ref": "#/$defs/id"},
+        "status": {"enum": ["COMPLETED", "PARTIAL_FAILED", "FAILED", "CANCELLED"]}
+      }
+    },
+    "receipt": {
+      "type": "object", "required": ["data", "request_id"],
+      "properties": {
+        "data": {"type": "object", "required": ["event_id", "status", "received_at"], "properties": {
+          "event_id": {"$ref": "#/$defs/id"}, "status": {"const": "RECEIVED"}, "received_at": {"$ref": "#/$defs/timestamp"}
+        }},
+        "request_id": {"$ref": "#/$defs/text"}
+      }
+    },
+    "error": {
+      "type": "object", "required": ["error", "request_id"],
+      "properties": {
+        "error": {"type": "object", "required": ["code", "message", "retryable"], "properties": {
+          "code": {"$ref": "#/$defs/text"}, "message": {"$ref": "#/$defs/text"}, "retryable": {"type": "boolean"}
+        }},
+        "request_id": {"$ref": "#/$defs/text"}
+      }
+    }
+  }
+}
