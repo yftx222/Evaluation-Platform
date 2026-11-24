@@ -3,7 +3,7 @@ from tempfile import TemporaryFile
 from typing import Any, BinaryIO, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import TypeAdapter, ValidationError
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
@@ -27,7 +27,27 @@ from app.contracts.datasets import (
     VersionAction,
 )
 
-router = APIRouter(prefix="/api/v1/datasets", tags=["datasets"])
+
+async def public_dataset(db: Db, d: UUID) -> None:
+    await row(
+        db,
+        "SELECT id FROM datasets d WHERE id=:d AND to_jsonb(d)->>'shadow_project_id' IS NULL",
+        d=d,
+    )
+
+
+async def check_dataset(req: Request, db: Db) -> None:
+    if "d" in req.path_params:
+        try:
+            d = UUID(req.path_params["d"])
+        except ValueError as exc:
+            raise Fault(422, "INVALID_INPUT", "数据集编号无效") from exc
+        await public_dataset(db, d)
+
+
+router = APIRouter(
+    prefix="/api/v1/datasets", tags=["datasets"], dependencies=[Depends(check_dataset)]
+)
 
 
 @router.get("")
@@ -36,6 +56,7 @@ async def listing(
 ) -> dict[str, object]:
     params: dict[str, Any] = {"q": "%" + args.q + "%"}
     sql = service.CATALOG + " WHERE (d.name ILIKE :q OR d.slug ILIKE :q)"
+    sql += " AND to_jsonb(d)->>'shadow_project_id' IS NULL"
     if archived is not None:
         sql += " AND d.archived=:archived"
         params["archived"] = archived
@@ -112,6 +133,7 @@ async def import_file(req: Request, db: Db, who: Cat) -> dict[str, object]:
     finally:
         await form.close()
     cases = await run_in_threadpool(parse, data, fmt, mapping)
+    await public_dataset(db, d)
     result = await service.import_cases(db, d, v, cases, preview, int(fmt in ("csv", "xlsx")))
     if not preview:
         await record(db, req, who, "import", "dataset_version", v, ["cases"])

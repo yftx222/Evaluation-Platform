@@ -15,6 +15,8 @@ from .privacy import check_fields, redact
 
 
 class TraceSession:
+    write_path = "/api/v1/trace-write/"
+
     def __init__(
         self,
         base_url: str,
@@ -44,7 +46,7 @@ class TraceSession:
             raise ValueError("invalid trace buffer or deadline")
         self.trace_id = trace_id
         self._token = token
-        self._url = base_url.rstrip("/") + "/api/v1/trace-write/"
+        self._url = base_url.rstrip("/") + self.write_path
         self._deadline = asyncio.get_running_loop().time() + timeout
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(capacity)
         self._wake = asyncio.Event()
@@ -125,6 +127,9 @@ class TraceSession:
                 await asyncio.sleep(0.05 * 2**attempt)
         return None
 
+    async def _start_session(self, client: httpx.AsyncClient) -> None:
+        """Attempt traces are already registered by the Worker."""
+
     async def _send(self) -> None:
         try:
             async with (
@@ -139,6 +144,7 @@ class TraceSession:
                     timeout=httpx.Timeout(2, connect=1),
                 ) as client,
             ):
+                await self._start_session(client)
                 while True:
                     await self._wake.wait()
                     self._wake.clear()

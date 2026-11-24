@@ -3,7 +3,8 @@ from typing import Any
 
 PRIVATE_KEY = re.compile(
     r"password|passwd|secret|authorization|cookie|apikey|accesskey|privatekey|"
-    r"token$|tracewrite|sessionid|credential|银行卡|e?mail(address)?$|phone(number)?$|mobile(number)?$|identitycard|身份证|手机号"
+    r"token$|tracewrite|sessionid|credential|chainofthought|reasoningcontent|hiddenthought|"
+    r"银行卡|e?mail(address)?$|phone(number)?$|mobile(number)?$|identitycard|身份证|手机号"
 )
 PRIVATE_VALUE = re.compile(
     r"(?i)\b(?:bearer|basic|apikey)\s+\S+|\bsk-[a-z0-9_-]{12,}|"

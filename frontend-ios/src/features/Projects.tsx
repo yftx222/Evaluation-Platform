@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo } from "react";
 import Evaluations from "./Evaluations";
 import Datasets from "./Datasets";
 import Evaluators from "./Evaluators";
+import Quality from "./Quality";
 import type { FormEvent, ReactNode } from "react";
 import { Button } from "antd";
 import { Glyph, ModuleNav, modules, SignalArt } from "../WorkspaceUI";
@@ -726,7 +727,7 @@ export default function Projects() {
         </div>
       ) : <div className="module-page" key={catalog}>
         <div className="page-heading"><Glyph name={activeModule.id} /><div><h1>{activeModule.title}</h1><p>{activeModule.hint}</p></div></div>
-        {catalog === "evaluations" ? (
+        {catalog === "quality" ? <Quality projects={projects} call={call}/> : catalog === "evaluations" ? (
         <Evaluations token={token} projects={projects} call={call} />
       ) : catalog === "evaluators" ? (
         <Evaluators call={call} canEdit={canEdit} />

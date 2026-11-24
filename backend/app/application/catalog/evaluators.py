@@ -17,10 +17,10 @@ from app.contracts.evaluators import (
     JudgeAccount,
     JudgeClient,
     Member,
-    Publish,
     ScoringContext,
     Trial,
 )
+from app.contracts.quality import RubricPublish
 from app.plugins.evaluator_releases import installed
 from app.plugins.evaluators import lookup
 from app.plugins.scoring_functions import TYPES
@@ -71,6 +71,8 @@ async def graph(
             if not owner["enabled"]:
                 raise Fault(422, "INVALID_CHILD", "不能选用已停用的子评分器")
         installed(version["impl_key"], version["build"])
+        if version.get("rubrics") is None:
+            version.pop("rubrics", None)
         for child in version["members"]:
             await visit(UUID(child["child_version_id"]))
         active.remove(id_)
@@ -82,7 +84,7 @@ async def graph(
 
 
 async def publish(
-    db: AsyncSession, e: UUID, body: Publish, accounts: dict[str, JudgeAccount]
+    db: AsyncSession, e: UUID, body: RubricPublish, accounts: dict[str, JudgeAccount]
 ) -> dict[str, Any]:
     owner = await row(db, "SELECT * FROM evaluators WHERE id=:e FOR UPDATE", e=e)
     if not owner["enabled"]:
@@ -127,10 +129,14 @@ async def publish(
     if bool(body.members) != (plugin.kind == "composite"):
         raise Fault(422, "INVALID_GRAPH", "只有组合评分器需要一个或多个子版本")
     nodes = await graph(db, [m.child_version_id for m in body.members], publishing=True)
+    if any(r.evaluator_ref != "self" and r.evaluator_ref not in nodes for r in body.rubrics):
+        raise Fault(422, "INVALID_RUBRIC", "细则只能引用本评分器或冻结的子版本")
     if len(nodes) >= 64:
         raise Fault(422, "GRAPH_LIMIT", "组合超过 64 个版本")
     ordered = sorted(body.members, key=lambda x: x.position)
     snapshot = body.model_dump(mode="json", exclude={"version", "members"})
+    if not body.rubrics:
+        snapshot.pop("rubrics")
     snapshot["config"] = config
     snapshot["members"] = [
         {**m.model_dump(mode="json"), "digest": nodes[m.child_version_id]["digest"]}
@@ -148,19 +154,22 @@ async def publish(
                 weight=member.weight,
             ),
         )
+    rubric_column = ",rubrics" if body.rubrics else ""
+    rubric_bind = ",CAST(:rubrics AS jsonb)" if body.rubrics else ""
     await db.execute(
-        text("""INSERT INTO evaluator_versions(id,evaluator_id,name,version,impl_key,build,
+        text(f"""INSERT INTO evaluator_versions(id,evaluator_id,name,version,impl_key,build,
       config,prompt_text,prompt_version,provider,model_id,model_revision,rubric_version,
-      revision_unverified,digest)
+      revision_unverified,digest{rubric_column})
       VALUES (:id,:e,:name,:version,:impl_key,:build,CAST(:cfg AS jsonb),:prompt_text,
       :prompt_version,
-      :provider,:model_id,:model_revision,:rubric_version,:unverified,:digest)"""),
+      :provider,:model_id,:model_revision,:rubric_version,:unverified,:digest{rubric_bind})"""),
         {
             **body.model_dump(exclude={"members", "config"}),
             "id": version_id,
             "e": e,
             "name": owner["name"],
             "cfg": json.dumps(config),
+            "rubrics": json.dumps(snapshot.get("rubrics")),
             "unverified": is_judge and not body.model_revision,
             "digest": digest(snapshot),
         },

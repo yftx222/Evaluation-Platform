@@ -109,8 +109,11 @@ async def snapshot(
         """SELECT v.id,v.dataset_id,v.version,v.digest,v.state,d.archived,
                   (SELECT count(*) FROM evaluation_cases WHERE dataset_version_id=v.id) sample_count
                   FROM dataset_versions v JOIN datasets d ON d.id=v.dataset_id WHERE v.id=:v
+                  AND (to_jsonb(d)->>'shadow_project_id' IS NULL OR
+                  to_jsonb(d)->>'shadow_project_id'=:owner)
                   FOR SHARE OF d,v""",
         v=body.dataset_version_id,
+        owner=str(p),
     )
     if dv.pop("archived"):
         raise Fault(409, "ARCHIVED", "数据集已归档")

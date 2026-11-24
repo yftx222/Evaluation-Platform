@@ -1,6 +1,6 @@
 # Agent 质量工程 · 中台与 AIOps 的 v1 接口契约
 
-此目录是阶段 A 的离线交付物。接口表中的路径供后续实现，样例中的 UUID 和时间是测试数据。中台维护生产 Trace、草稿提案和批次明细的格式，AIOps 维护事件收件格式；变更任一方持有的字段时，两端重跑同一组样例。
+此目录保存阶段 A 冻结的线格式，样例中的 UUID 和时间是测试数据。中台维护生产 Trace、草稿提案和批次明细的格式，AIOps 维护事件收件格式。两端的实际 HTTP 验收由中台 `backend/tests/test_quality_peer_http.py` 执行，可核对收件回执、草稿发布和逐样本回测结果。
 
 **本轮对齐项：草稿发布后保留 ID。** 共同样例 `exchanges.json` 中，`submit_proposal` 与 `proposal_replay` 的 `draft_id` 应为 `17b011b7-a102-4c93-94e9-000000000005`，与 `batch-completed.json` 的 `dataset_version_id` 一致。中台现有实现把同一行从 DRAFT 改为 PUBLISHED，这条样本的 ID 随之保留。若后续从已发布版本派生新草稿，系统会复制样本并分配新 ID，须按新版本内的 case_key 重新取样本 ID。早期样例里的尾号 015 不适用于本例。
 

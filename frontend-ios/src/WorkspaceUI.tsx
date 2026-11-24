@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 
 const symbols = {
+  quality: "M4 5h16v12H4zM8 21h8M8 12l3 2 5-6",
   projects:
     "M3 8V6a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8Z",
   datasets: "m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4",
@@ -46,6 +47,7 @@ export const modules = [
     title: "批量评测",
     hint: "编排评测任务，跟踪进度并查看运行报告。",
   },
+  {id:"quality", title:"质量工程", hint:"查看生产轨迹、回测门禁和在线实验。"},
 ] as const;
 
 export function ModuleNav({

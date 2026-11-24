@@ -20,7 +20,12 @@ from app.api import (
     evaluators,
     evidence,
     members,
+    online_quality,
+    production_traces,
     projects,
+    quality_batches,
+    quality_proposals,
+    quality_reports,
     reports,
     run_progress,
     traces,
@@ -81,6 +86,11 @@ def create_app(
     api.include_router(run_progress.router)
 
     api.include_router(traces.router)
+    api.include_router(production_traces.router)
+    api.include_router(quality_proposals.router)
+    api.include_router(quality_batches.router)
+    api.include_router(quality_reports.router)
+    api.include_router(online_quality.router)
     api.include_router(evidence.router)
     api.include_router(reports.router)
 

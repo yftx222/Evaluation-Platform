@@ -7,7 +7,8 @@ from app.api.access import Cat, Db, User, record
 from app.api.projects import ListArgs, reply
 from app.application.catalog import evaluators as service
 from app.application.catalog.store import page, row
-from app.contracts.evaluators import EvaluatorCreate, EvaluatorPatch, Kind, Publish, Trial
+from app.contracts.evaluators import EvaluatorCreate, EvaluatorPatch, Kind, Trial
+from app.contracts.quality import RubricPublish
 from app.plugins.evaluators import registry
 from app.plugins.judge import CompatibleJudge
 
@@ -107,7 +108,9 @@ async def versions(req: Request, db: Db, who: User, e: UUID, args: ListArgs) -> 
 
 
 @router.post("/{e}/versions", status_code=201)
-async def publish(req: Request, db: Db, who: Cat, e: UUID, body: Publish) -> dict[str, object]:
+async def publish(
+    req: Request, db: Db, who: Cat, e: UUID, body: RubricPublish
+) -> dict[str, object]:
     item = await service.publish(db, e, body, req.app.state.settings.judge_accounts)
     await record(
         db, req, who, "publish", "evaluator_version", item["id"], list(body.model_fields_set)

@@ -13,6 +13,7 @@ from app.application.access.identity import DevelopmentIdentity
 from app.application.catalog.store import Fault, row
 from app.contracts.evaluators import JudgeAccount
 from app.contracts.http import TargetRule
+from app.contracts.quality import QualityReceiver, ServiceGrant, TracePolicy
 from app.contracts.reports import ReportPolicy
 from app.infrastructure.attempt_http import active
 
@@ -31,6 +32,12 @@ class Settings(BaseSettings):
     report_policies: dict[UUID, ReportPolicy] = Field(default_factory=dict)
     trace_retention_days: int | None = Field(None, ge=1, le=36500)
     trace_target_versions: set[UUID] = Field(default_factory=set)
+    quality_grants: list[ServiceGrant] = Field(default_factory=list)
+    quality_receivers: dict[UUID, dict[str, QualityReceiver]] = Field(default_factory=dict)
+    isolated_quality_versions: dict[str, set[UUID]] = Field(default_factory=dict)
+    production_trace_policies: dict[UUID, dict[str, TracePolicy]] = Field(default_factory=dict)
+    production_trace_keys: dict[str, SecretStr] = Field(default_factory=dict)
+    production_trace_key_version: str | None = None
     verified_idempotent_versions: set[UUID] = Field(default_factory=set)
     pool_size: int = Field(5, ge=1, le=100)
 
